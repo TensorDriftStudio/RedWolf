@@ -1,18 +1,16 @@
 # RedWolf Domain Rules
 
-## Project Objective
-RedWolf automates preparation, hardware inventory discovery, and operating system provisioning for bare-metal servers (specifically Dell PowerEdge R640 as reference) and virtual machines.
+## Multi-Vendor Support
+RedWolf supports bare-metal servers from **Dell PowerEdge**, **Supermicro**, **ASRock Rack**, and generic IPMI/VM platforms.
 
-## Standard Deployment Workflow
-1. Physical Server Connection:
-   - Redundant Power Supplies
-   - iDRAC / BMC dedicated management port
-   - First network adapter (NIC 1) connected to the provisioning network
-2. Node boots via PXE from the provisioning network.
-3. DHCP and TFTP/HTTP services managed by RedWolf deliver the in-memory Discovery Agent:
-   - Hardware telemetry extraction: CPU model/cores/threads, platform model/chassis (DMI/SMBIOS), total RAM, network interface MAC addresses, storage devices.
-   - BMC Configuration: Set secure credentials, enable DHCP mode on the BMC interface, retrieve assigned BMC IP.
-4. RedWolf Web GUI updates and marks node status as "Ready for Provisioning".
-5. Target OS deployment:
-   - Supported distributions: AlmaLinux (8, 9, 10), Debian (12, 13).
-   - Deployment mechanism: Cloud-Init (storage partitioning, root password, target network configuration).
+## Key Hardware Invariants
+1. **BMC Compatibility:**
+   - Password limit: 14 to 16 characters (to prevent MegaRAC/ASPEED 16-byte IPMI truncation on Supermicro/ASRock Rack).
+   - Enforce Dedicated BMC management port mode via raw IPMI where required.
+2. **Storage Targeting:**
+   - Never assume `/dev/sda`. Support NVMe (`/dev/nvmeXn1`), Dell BOSS, SATADOM, and SAS/SATA by Serial and `/dev/disk/by-id/`.
+3. **Network Configuration:**
+   - Always match network adapters by MAC address in Cloud-Init `network-config` v2 templates.
+4. **Bare-Metal Cloud-Init Deployment:**
+   - Stream generic cloud raw images directly to target drive using `zstd`.
+   - Inject the Cloud-Init NoCloud `cidata` partition.

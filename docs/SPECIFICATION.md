@@ -1,195 +1,229 @@
-# RedWolf Technical Specification
+# RedWolf Technical Specification & Hardware Abstraction Layer
 
 ## 1. Scope & System Overview
 
-**RedWolf** is an automated inventory discovery and operating system provisioning platform engineered for Data Center server environments, bare-metal hardware (with **Dell PowerEdge R640** serving as reference hardware), and virtual machines.
+**RedWolf** is an enterprise-grade automated hardware inventory discovery and operating system provisioning platform. It is engineered for Data Center server environments, supporting multi-vendor bare-metal architectures as well as virtual machines.
 
-This document outlines the detailed functional requirements, communication protocols, telemetry schemas, and lifecycle workflows.
+### Supported Vendor Platforms
+* **Dell PowerEdge:** 13th, 14th, 15th, and 16th generation (reference model: **Dell PowerEdge R640**, iDRAC 8/9).
+* **Supermicro:** Intel and AMD platforms (X10, X11, X12, H11, H12, H13 series with AMI MegaRAC BMC).
+* **ASRock Rack:** Server motherboards (EPYCD8, ROMED8, B650D4, Paul series with ASPEED AST2500/AST2600 BMC).
+* **Generic x86_64 & Virtualization:** Standards-compliant IPMI 2.0 / Redfish servers and virtual machines (KVM, Proxmox, VMware ESXi).
 
 ---
 
-## 2. Network Topology & Physical Racking
+## 2. Hardware Abstraction Layer (HAL) & Vendor Profiles
 
-### 2.1 Physical Cable Connections (Dell PowerEdge R640 Reference)
-In the server cabinet, the data center technician completes the following physical connections:
-1. **Power:** PSU1 and PSU2 connected to independent A/B power distribution units (PDUs).
-2. **BMC / iDRAC Port:** Dedicated 1GbE RJ-45 iDRAC 9 port connected to the Out-of-Band (OOB) management VLAN.
-3. **Provisioning Port:** Primary network interface (`NIC 1` / LOM port 1 / `eno1`) connected to the dedicated provisioning VLAN.
+Vendor BMCs, storage topologies, and network enumeration diverge significantly across manufacturers. RedWolf implements a modular **Vendor Profile Pattern** triggered by DMI manufacturer detection (`dmidecode -s system-manufacturer`).
 
 ```text
-+---------------------------------------------------------------+
-|                      DELL PowerEdge R640                      |
-|                                                               |
-|  [PSU 1] [PSU 2]     [iDRAC RJ-45]     [NIC 1] [NIC 2] [NIC 3]|
-+-----|-------|--------------|--------------|-------------------+
-      |       |              |              |
-    Power A / B           OOB VLAN       Provisioning VLAN
-                        (Management)    (RedWolf DHCP/TFTP)
+                                [Node Boots in RAM]
+                                         │
+                         Detect DMI System Manufacturer
+                                         │
+        ┌────────────────────────────────┼────────────────────────────────┐
+        ▼                                ▼                                ▼
+  [DellProfile]                 [SupermicroProfile]              [ASRockRackProfile]
+  • Chassis: Dell Inc.          • Chassis: Supermicro            • Chassis: ASRockRack
+  • BMC: iDRAC 8/9 (KCS)        • BMC: MegaRAC (KCS)             • BMC: MegaRAC / ASPEED
+  • User 2: "root"              • User 2: "ADMIN"                • User 2: "admin"
+  • Password: Up to 20/32 char  • Password: 12-16 char safe      • Password: 12-16 char safe
+  • Port: Dedicated RJ-45       • Port: Raw cmd force Dedicated  • Port: Force Dedicated
+  • Boot drives: BOSS / NVMe    • Boot drives: SATADOM / NVMe    • Boot drives: M.2 NVMe / SATA
 ```
+
+### 2.1 BMC Credential Standards & Cross-Vendor Compatibility
+Standard IPMI 2.0 implementations over the KCS (Keyboard Controller Style) LPC bus have an RFC specification buffer limit of **16 to 20 bytes** for user passwords. While Dell iDRAC 9 web console allows up to 32 characters, Supermicro and ASRock Rack MegaRAC BMCs will reject or silently truncate passwords longer than 16 characters (`0xd5` parameter out of range).
+
+* **RedWolf Cross-Vendor Password Policy:**
+  * Password length: Strictly **14 to 16 characters**.
+  * Complexity: At least one uppercase letter, one lowercase letter, one digit, and one standard symbol (`!@#$%^&*`).
+  * Universal compatibility: Accepted without truncation by Dell iDRAC, Supermicro AMI MegaRAC, and ASRock Rack ASPEED BMCs.
+
+### 2.2 BMC Physical Interface Mode (Dedicated vs. Shared NC-SI)
+* **Dell PowerEdge:** Out-of-band management is wired to a dedicated enterprise port.
+* **Supermicro & ASRock Rack:** The BMC network port mode can be configured in BIOS to *Dedicated*, *Shared (LAN1 NC-SI)*, or *Failover*. If the BMC is set to Shared while a technician connects the dedicated IPMI port, the BMC will never receive a DHCP lease.
+* **Remediation via Discovery Agent:**
+  * For Supermicro, the agent executes OEM raw IPMI commands to ensure the Dedicated management port is active:
+    ```bash
+    # Supermicro: Query LAN port mode (0x00=Dedicated, 0x01=Shared, 0x02=Failover)
+    ipmitool raw 0x30 0x70 0x0c 0
+    # Supermicro: Force Dedicated mode
+    ipmitool raw 0x30 0x70 0x0c 1 0
+    ```
+  * Configures DHCP mode:
+    ```bash
+    ipmitool lan set 1 ipsrc dhcp
+    ```
+  * **Asynchronous Polling with Backoff:** The agent polls `ipmitool lan print 1` every 3 seconds for up to 30 seconds to allow the management switch to negotiate link and dispatch the DHCP lease.
 
 ---
 
-## 3. Auto-Discovery & Network Boot (PXE / iPXE)
+## 3. Network Architecture & Zero-Loop PXE/iPXE Boot
 
 ### 3.1 Network Services Managed by RedWolf Core
-RedWolf automatically starts and orchestrates two core network services on the provisioning interface:
-1. **DHCP Server:**
-   - Listens for `DHCPDISCOVER` packets on the provisioning broadcast domain.
-   - Detects client architecture via DHCP Option 93 (UEFI x86_64 vs Legacy x86 BIOS).
-   - Returns `Next-Server` (RedWolf IP) and `Bootfile-Name` (`ipxe.efi` for UEFI / `undionly.kpxe` for legacy BIOS).
-2. **TFTP & HTTP Boot Services:**
-   - Transfers the initial iPXE chainloader via TFTP.
-   - iPXE immediately chains over high-throughput HTTP to retrieve the Linux kernel (`vmlinuz`) and the **RedWolf Discovery Agent** initramfs (`initramfs.img`).
+RedWolf Core manages the provisioning broadcast domain using containerized, battle-tested network services:
+1. **Network Boot Orchestration (`dnsmasq`):**
+   * Handles DHCP Option 93 (Client System Architecture) to deliver appropriate loaders:
+     * Architecture `0000` (x86 BIOS): `undionly.kpxe`
+     * Architecture `0007` / `0009` (x86_64 UEFI): `ipxe.efi`
+     * Architecture `0011` (ARM64 UEFI): `ipxe-arm64.efi`
+   * **Infinite Boot Loop Prevention:** RedWolf inspects DHCP Option 77 (`user-class`). If the request originates from standard PXE ROM, it serves iPXE. If the request originates from `iPXE`, it chains to the HTTP boot script:
+     ```text
+     dhcp-match=set:ipxe,77,"iPXE"
+     dhcp-boot=tag:!ipxe,ipxe.efi
+     dhcp-boot=tag:ipxe,http://<REDWOLF_IP>:8080/boot.ipxe
+     ```
+2. **High-Speed HTTP Asset Server:**
+   * Serves Linux kernel (`vmlinuz`), discovery ramdisk (`initramfs.img`), and raw compressed OS images over HTTP (avoiding slow UDP TFTP bottlenecks).
 
-### 3.2 RedWolf Discovery Agent Lifecycle
-The discovery agent executes completely in RAM without touching local storage drives.
+---
 
-#### A. Hardware Inventory Gathering:
-- **Processor (CPU):**
-  - Queried via `/proc/cpuinfo` and `lscpu`.
-  - Captures processor model (e.g. `Intel(R) Xeon(R) Gold 6140 CPU @ 2.30GHz`).
-  - Total sockets, physical cores per socket, logical threads per socket.
-  - Virtualization extensions (VT-x, AMD-V) and crypto flags (AES-NI).
-- **Platform & Chassis DMI:**
-  - Extracted via `dmidecode -s system-manufacturer`, `system-product-name`, and `system-serial-number`.
-  - Validates `Dell Inc. PowerEdge R640` and records the Dell Service Tag.
-- **System Memory (RAM):**
-  - Total usable and installed memory capacity in bytes / GiB.
-  - DIMM slot mapping via `dmidecode -t memory`: channel layout, memory type (DDR4 ECC Registered), and module frequencies.
-- **Network Interface Cards (NICs):**
-  - Discovered via `/sys/class/net/*` and `ip -j link`.
-  - Records MAC addresses, physical link states, negotiated speeds (1GbE / 10GbE / 25GbE), and PCI bus locations.
-- **Storage Devices:**
-  - Enumerated via `lsblk -J -b -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,TRAN`.
-  - Distinguishes NVMe SSDs, SAS/SATA drives, and Dell BOSS-S1 boot controllers.
+## 4. In-Memory Discovery Engine (`redwolf-discovery`)
 
-#### B. BMC / iDRAC Automation (In-Band via IPMI KCS):
-- New or unconfigured servers often do not have static IP addresses or knowable credentials on the iDRAC port.
-- The discovery agent loads the `ipmi_si` and `ipmi_devintf` kernel modules to communicate over the local motherboard KCS (Keyboard Controller Style) interface.
-- Without requiring network access to iDRAC, the agent executes:
-  ```bash
-  # 1. Configure dedicated administrator account on BMC
-  ipmitool user set name 2 <REDWOLF_BMC_USER>
-  ipmitool user set password 2 <REDWOLF_BMC_PASSWORD>
-  ipmitool user enable 2
-  ipmitool channel setaccess 1 2 callin=on ipmi=on link=on privilege=4
+The discovery agent executes entirely in RAM. It strictly parses machine-readable JSON outputs to eliminate regex breakage across varying kernel releases.
 
-  # 2. Configure BMC interface to acquire IP via DHCP
-  ipmitool lan set 1 ipsrc dhcp
+### 4.1 Telemetry Collection Commands
+| Component | Command | Extracted Fields |
+| :--- | :--- | :--- |
+| **System & Chassis** | `dmidecode -s ...` | Manufacturer, Product Name, Serial Number / Service Tag, UUID |
+| **Firmware Mode** | `[ -d /sys/firmware/efi ]` | `UEFI` vs `BIOS` |
+| **CPU** | `lscpu -J` | Architecture, Model, Sockets, Cores per Socket, Threads per Socket, Virtualization flags |
+| **Memory** | `dmidecode -t memory` | Total capacity, slot population, type (DDR4/DDR5 ECC Reg), frequency |
+| **Storage Devices** | `lsblk -J -b -o NAME,SIZE,TYPE,MODEL,SERIAL,WWN,TRAN,ROTA` | NVMe, SATA, SAS, Dell BOSS, Supermicro SATADOM, exact bytes, serial number |
+| **Network Interfaces** | `ip -j link` & `ethtool` | MAC address, link speed, carrier status, PCI bus address, driver name |
+| **Active Boot Interface** | `/proc/net/pnp` / route | Identifies the exact MAC used to boot from RedWolf |
 
-  # 3. Poll for assigned BMC IP address
-  ipmitool lan print 1 | grep "IP Address"
-  ```
-- The acquired BMC IP address, BMC MAC address, and credential confirmation are stored in the telemetry payload.
-
-#### C. Telemetry Payload Transmission:
-The agent posts a structured JSON payload to the RedWolf Core API endpoint: `POST /api/v1/discovery/report`.
-
+### 4.2 Telemetry JSON Schema Example
 ```json
 {
-  "system": {
-    "manufacturer": "Dell Inc.",
-    "model": "PowerEdge R640",
-    "serial_number": "4X9Z8Y2",
-    "bios_version": "2.16.0"
+  "hardware": {
+    "manufacturer": "Supermicro",
+    "product_name": "SYS-1029P-WTRT",
+    "serial_number": "S123456789X",
+    "uuid": "4c4c4544-004a-4410-804d-b3c04f523432",
+    "firmware_mode": "UEFI"
   },
   "cpu": {
-    "model": "Intel(R) Xeon(R) Gold 6140 CPU @ 2.30GHz",
+    "model": "Intel(R) Xeon(R) Silver 4210R CPU @ 2.40GHz",
     "sockets": 2,
-    "cores_per_socket": 18,
-    "threads_per_socket": 36,
-    "total_threads": 72
+    "cores_per_socket": 10,
+    "threads_per_socket": 20,
+    "total_threads": 40
   },
   "memory": {
-    "total_bytes": 137438953472,
-    "total_human": "128 GiB",
+    "total_bytes": 68719476736,
+    "total_human": "64 GiB",
     "slots_used": 4,
-    "slots_total": 24,
+    "slots_total": 12,
     "type": "DDR4 ECC Registered"
-  },
-  "network_interfaces": [
-    {
-      "name": "eno1",
-      "mac": "b0:4f:13:2a:44:80",
-      "speed_mbps": 10000,
-      "link_detected": true,
-      "pci_slot": "Embedded LOM 1"
-    },
-    {
-      "name": "eno2",
-      "mac": "b0:4f:13:2a:44:81",
-      "speed_mbps": 10000,
-      "link_detected": false,
-      "pci_slot": "Embedded LOM 2"
-    }
-  ],
-  "bmc": {
-    "type": "iDRAC9",
-    "mac": "b0:4f:13:2a:44:8e",
-    "ip_address": "192.168.100.45",
-    "dhcp_enabled": true,
-    "credentials_updated": true
   },
   "storage_devices": [
     {
-      "name": "sda",
-      "size_bytes": 960197124096,
-      "size_human": "960 GB",
-      "type": "SSD",
-      "model": "DELL BOSS-S1"
-    },
-    {
-      "name": "sdb",
+      "name": "nvme0n1",
+      "path": "/dev/nvme0n1",
+      "by_id": "/dev/disk/by-id/nvme-SAMSUNG_MZQL21T9HCJR-00A07_S64BNG0R101234",
       "size_bytes": 1920383410176,
       "size_human": "1.92 TB",
-      "type": "NVMe",
-      "model": "Samsung PM9A3"
+      "type": "nvme",
+      "transport": "nvme",
+      "model": "SAMSUNG MZQL21T9HCJR-00A07",
+      "serial": "S64BNG0R101234"
+    },
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "by_id": "/dev/disk/by-id/ata-SATADOM-SL_3SE_20191024AA123456",
+      "size_bytes": 64023257088,
+      "size_human": "64 GB",
+      "type": "disk",
+      "transport": "sata",
+      "model": "SATADOM-SL 3SE",
+      "serial": "20191024AA123456"
     }
-  ]
+  ],
+  "network_interfaces": [
+    {
+      "name": "enp3s0f0",
+      "mac": "ac:1f:6b:80:12:34",
+      "carrier": true,
+      "is_boot_interface": true,
+      "speed_mbps": 10000,
+      "driver": "ixgbe",
+      "pci_slot": "0000:03:00.0"
+    }
+  ],
+  "bmc": {
+    "vendor": "Supermicro",
+    "mac": "ac:1f:6b:80:99:aa",
+    "ip_address": "192.168.100.52",
+    "dhcp_enabled": true,
+    "channel": 1,
+    "port_mode": "Dedicated",
+    "credentials_updated": true
+  }
 }
 ```
 
 ---
 
-## 4. RedWolf GUI Node Representation
+## 5. Storage-Safe Image Streaming & Cloud-Init Injection
 
-Upon receipt of the telemetry report:
-1. The server record in the database transitions to state `READY_FOR_PROVISIONING`.
-2. The Web Dashboard displays an interactive server card with the **"Ready for Provisioning"** badge.
-3. The operator sees:
-   - Full hardware summary (CPU, RAM, MAC table, physical disks).
-   - Direct link to the iDRAC web console (`https://<BMC_IP>`).
-   - A **"Deploy Server"** button launching the provisioning configuration wizard.
+Bare-metal servers do not have cloud hypervisors to attach virtual metadata ISOs. RedWolf solves this with **Direct Stream & NoCloud Injection**:
+
+```text
+[RedWolf Core]
+       │
+       │ HTTP Image Stream (zstd compressed)
+       ▼
+[Discovery Agent in RAM]
+       │
+       ├─► 1. Write OS image to explicitly selected target drive (e.g. /dev/nvme0n1)
+       │      curl -s http://.../almalinux-9.raw.zstd | zstd -d | dd of=/dev/nvme0n1 bs=4M
+       │
+       ├─► 2. Re-read partition table (partx -u /dev/nvme0n1)
+       │
+       ├─► 3. Create Cloud-Init 'cidata' partition on target disk
+       │      Format FAT32/ext4 with filesystem label: "cidata"
+       │      Write /cidata/user-data, /cidata/meta-data, /cidata/network-config
+       │
+       ├─► 4. Register NVRAM Bootloader Entry (efibootmgr)
+       │
+       └─► 5. System reboot into production OS
+```
+
+### 5.1 Deterministic Storage Target Selection
+* The GUI prompts the user to select the boot drive with clear serial numbers and transport types (e.g. `Samsung PM9A3 1.92TB NVMe [SN: S64BNG0R...]`).
+* RedWolf **never** writes blindly to `/dev/sda`. It writes directly to the immutable device path `/dev/disk/by-id/<ID>` or verified kernel name.
+
+### 5.2 MAC-Based Cloud-Init Network Matching
+Because Linux kernel device names vary across vendors (`eno1` on Dell, `enp3s0f0` on Supermicro, `eth0` on ASRock), Cloud-Init `network-config` version 2 configurations must bind to **MAC addresses**, never device names:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    id0:
+      match:
+        macaddress: "ac:1f:6b:80:12:34"
+      set-name: eth0
+      addresses:
+        - 10.10.20.50/24
+      gateway4: 10.10.20.1
+      nameservers:
+        addresses:
+          - 1.1.1.1
+          - 8.8.8.8
+```
 
 ---
 
-## 5. Cloud-Init OS Provisioning Engine
+## 6. Supported Operating System Matrix
 
-### 5.1 Supported Operating Systems
-RedWolf provides automated deployment workflows for:
-- **AlmaLinux 8**
-- **AlmaLinux 9**
-- **AlmaLinux 10**
-- **Debian 12 (Bookworm)**
-- **Debian 13 (Trixie)**
-
-### 5.2 Wizard Configuration Parameters:
-1. **Operating System Selection:** Target distribution and version.
-2. **Storage Layout & Partitioning:**
-   - Target drive selection (e.g. `/dev/sda` or Dell BOSS-S1 virtual drive).
-   - Layout mode: Standard partitions (`/boot/efi`, `/boot`, `/`, `swap`) or LVM with flexible volume groups.
-3. **Security & Access Control:**
-   - Root password (hashed using SHA-512 crypt `$6$`).
-   - Authorized SSH public keys for root and default administrative accounts.
-4. **Target Production Networking:**
-   - Interface selection or NIC bonding (e.g. `bond0` combining `eno1` + `eno2` using 802.3ad LACP).
-   - Network addressing: Static IP (IPv4 CIDR, default gateway, DNS servers) or production DHCP.
-   - Optional VLAN tagging (802.1Q).
-
-### 5.3 Metadata Rendering & Execution
-RedWolf renders the metadata and serves it via an authenticated HTTP endpoint (`http://<REDWOLF_IP>/cloud-init/<MAC>/`):
-- `user-data`: Defines users, authorized keys, password hashes, package repositories, and initial tooling (`qemu-guest-agent`, `curl`, `htop`).
-- `meta-data`: Defines `instance-id` and `local-hostname`.
-- `network-config`: Standard Netplan v2 or NetworkManager configuration.
-
-The provisioning engine streams the target base image to disk, injects the Cloud-Init configuration, triggers local bootloader installation, and commands the node to reboot into production.
+| Operating System | Image Format | Cloud-Init Version | Storage Support |
+| :--- | :--- | :--- | :--- |
+| **AlmaLinux 8** | GenericCloud `.raw.zstd` | Cloud-Init 22.x | NVMe, SATA, SAS, LVM, Software RAID |
+| **AlmaLinux 9** | GenericCloud `.raw.zstd` | Cloud-Init 23.x | NVMe, SATA, SAS, LVM, Software RAID |
+| **AlmaLinux 10** | GenericCloud `.raw.zstd` | Cloud-Init 24.x | NVMe, SATA, SAS, LVM, Software RAID |
+| **Debian 12 (Bookworm)** | GenericCloud `.raw.zstd` | Cloud-Init 22.x / 23.x | NVMe, SATA, SAS, LVM, Software RAID |
+| **Debian 13 (Trixie)** | GenericCloud `.raw.zstd` | Cloud-Init 24.x | NVMe, SATA, SAS, LVM, Software RAID |

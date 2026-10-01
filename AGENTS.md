@@ -18,72 +18,46 @@ This file serves as the primary source of architectural context, domain knowledg
 
 ## 🐺 What is RedWolf?
 
-**RedWolf** is a modern, open-source bare-metal and virtual machine (VM) automated provisioning platform designed for simplicity, speed, and zero-touch deployment in data center server racks and homelabs.
+**RedWolf** is a modern, open-source bare-metal and virtual machine (VM) automated provisioning platform designed for zero-touch deployment in enterprise data center racks and homelabs.
 
-### Primary Use Case (Data Center Technician Workflow):
-1. **Physical Server Installation:** A technician mounts an enterprise server (reference platform: **Dell PowerEdge R640**) into the rack and connects:
-   - Redundant Power Supplies (PSU1 / PSU2)
-   - Dedicated iDRAC / BMC port to the Out-of-band (OOB) management network
-   - First network port (NIC1 / eth0 / onboard 1GbE/10GbE LOM) to the provisioning network
-2. **PXE Boot:** The technician powers on the server and initiates a network boot (PXE), or the server boots via PXE by default if disks are unpartitioned.
-3. **RedWolf Autonomous Takeover:**
-   - RedWolf manages integrated **DHCP** and **TFTP/HTTP Boot** services on the dedicated provisioning network.
-   - Upon PXE boot, the node loads and runs a lightweight in-memory micro-OS (**RedWolf Discovery Agent** / ramdisk).
-   - The Discovery Agent automatically:
-     - **Collects Hardware Inventory:** platform/chassis model (e.g. Dell PowerEdge R640, Service Tag), CPU details (model, sockets, cores, threads), RAM (total capacity, DIMM slots configuration), MAC addresses of all detected network interfaces, and disk storage devices.
-     - **Automates BMC / iDRAC Configuration:** via the local in-band KCS interface using `ipmitool` / OpenIPMI / Redfish, configures a secure administrator username and password, enables DHCP mode on the BMC interface, and retrieves the assigned BMC IP address.
-4. **GUI Presentation:**
-   - The Discovery Agent sends a telemetry report via HTTP API to RedWolf Core.
-   - The server appears in real-time in the RedWolf Web GUI with the status **"Ready for Provisioning"**.
-5. **Operating System Deployment (Cloud-Init):**
-   - The administrator selects the target operating system in the GUI:
-     - **AlmaLinux 8, 9, 10**
-     - **Debian 12 (Bookworm), 13 (Trixie)**
-   - The administrator configures deployment parameters:
-     - Disk partitioning scheme (LVM, software RAID, NVMe/SSD/HDD target drives, swap)
-     - Root password and authorized SSH public keys
-     - Target production network configuration (Static IP / DHCP, gateway, DNS, LACP bonding, VLANs)
-   - RedWolf renders cloud-init (`user-data`, `meta-data`, `network-config`), streams the base OS image to disk, applies configuration, and reboots the server into a fully operational production state.
+### Target Platforms (Multi-Vendor):
+1. **Dell PowerEdge:** 13th, 14th, 15th, 16th Gen (R640, R740, R750 with iDRAC 8/9).
+2. **Supermicro:** Intel & AMD platforms (X10, X11, X12, H11, H12 with AMI MegaRAC BMC).
+3. **ASRock Rack:** Server motherboards (EPYCD8, ROMED8, B650D4 with ASPEED AST2500/AST2600).
+4. **Generic x86_64 & Virtualization:** Standards-compliant IPMI 2.0 / Redfish servers and VMs (KVM, Proxmox, VMware ESXi).
 
 ---
 
-## 🏛️ System Architecture
+## 🏛️ Multi-Vendor Hardware Abstraction Layer (HAL) Rules
 
-1. **`redwolf-core` (Backend & Orchestrator):**
-   - Finite State Machine (FSM): `DISCOVERED` -> `COLLECTING_TELEMETRY` -> `READY_FOR_PROVISIONING` -> `PROVISIONING` -> `ACTIVE` / `FAILED`.
-   - Built-in/managed network services:
-     - **DHCP Server:** provisioning subnet address allocation and PXE options (Next-Server, Bootfile Name for iPXE / UEFI).
-     - **TFTP / HTTP Boot Server:** serving iPXE binaries, Linux kernels (`vmlinuz`), and discovery initramfs.
-   - REST / WebSocket API for agents and the frontend.
-   - Cloud-Init metadata templating engine (`user-data`, `meta-data`, `network-config` v2).
+1. **Vendor Detection:**
+   - Detect manufacturer dynamically via DMI (`dmidecode -s system-manufacturer`).
+   - Trigger vendor-specific profile: `DellProfile`, `SupermicroProfile`, `ASRockRackProfile`, or `GenericIPMIProfile`.
 
-2. **`redwolf-discovery` (Discovery Agent & Live Boot Image):**
-   - Minimal in-memory Linux micro-OS (initramfs based on Alpine Linux or minimal Buildroot/Debian kernel).
-   - Discovery daemon extracting data using `dmidecode`, `lscpu`, `/sys`, `ip`, `ethtool`.
-   - In-band BMC configuration modules (`ipmi_si`, `ipmi_devintf`, `ipmitool`).
-   - Reports telemetry back to `redwolf-core` via HTTP POST (JSON payload).
+2. **BMC Automation & Universal Credential Standards:**
+   - **Password Length Safety:** RFC standard IPMI 2.0 KCS password buffers are limited to **16 bytes** on Supermicro and ASRock Rack. Generated passwords must strictly be **14 to 16 characters** long with mixed case, digits, and symbols (`!@#$%^&*`). Do NOT generate >16 char passwords on MegaRAC BMCs.
+   - **BMC Network Mode:** Ensure the management interface is set to **Dedicated** port mode (executing Supermicro raw IPMI command `raw 0x30 0x70 0x0c 1 0` if required) so DHCP works regardless of BIOS defaults.
+   - **Polling Backoff:** Implement retry loops (3s interval, up to 30s) when polling for the assigned BMC IP address.
 
-3. **`redwolf-ui` (Web GUI Dashboard):**
-   - Modern, reactive web application (SPA).
-   - Real-time updates for discovered nodes.
-   - Provisioning wizard: OS selection (AlmaLinux 8/9/10, Debian 12/13), storage layout, credentials, network setup.
-   - Visual telemetry: CPU, RAM, storage, network interfaces, and iDRAC status.
+3. **Deterministic Storage Provisioning (No Blind `/dev/sda`):**
+   - Disks must be inventoried using machine-readable JSON: `lsblk -J -b -o NAME,SIZE,TYPE,MODEL,SERIAL,WWN,TRAN,ROTA`.
+   - Never hardcode `/dev/sda`. Support NVMe drives (`/dev/nvme0n1`), Dell BOSS RAID cards, Supermicro SATADOM, and SAS/SATA drives.
+   - Image streaming engine writes to explicitly operator-selected disk by immutable identifier (`/dev/disk/by-id/...` or verified device name).
 
-4. **`redwolf-profiles` & `templates`:**
-   - Cloud-init, kickstart, and preseed templates.
-   - Hardware profiles (Dell PowerEdge R640 / iDRAC 9 defaults).
+4. **MAC-Matched Cloud-Init Networking:**
+   - Network card kernel names vary across vendors (`eno1` on Dell, `enp3s0f0` on Supermicro, `eth0` on ASRock).
+   - All Cloud-Init `network-config` version 2 templates must bind to **MAC addresses** (`match: macaddress: "..."`).
+
+5. **Bare-Metal Cloud-Init Streaming (`cidata`):**
+   - Stream compressed official cloud raw images (`.raw.zstd`) directly to the target storage drive.
+   - Automatically format and write the NoCloud **`cidata`** partition on the target disk containing `user-data`, `meta-data`, and `network-config`.
+   - Register NVRAM boot entry using `efibootmgr` on UEFI platforms.
 
 ---
 
-## 🛠️ Technical Guidelines for AI Assistants
+## 🛠️ Technology Stack Standards
 
-1. **Strict Language Requirement:**
-   - Every file created or updated must use **English exclusively**.
-2. **Dell PowerEdge & BMC Automation:**
-   - BMC IP addresses might not be preconfigured on newly mounted servers. Use the local KCS interface (`ipmitool lan set ...`, `ipmitool user set ...`) from the live discovery environment.
-   - All BMC configuration scripts must be idempotent.
-3. **PXE & Cloud-Init Reliability:**
-   - Target images must use proper Cloud-Init configuration (`user-data`, `meta-data`, `network-config` version 2).
-   - Passwords must be securely hashed (e.g. SHA-512 crypt `$6$`).
-4. **Visual Assets:**
-   - Always use official vector SVGs from [`assets/logo/`](file:///home/dawid/RedWolf/assets/logo/).
+* **Core Backend:** Go 1.23+ with Chi router, SQLite (WAL mode), and managed `dnsmasq` subprocess for PXE/iPXE boot loop prevention.
+* **Discovery Agent:** Alpine Linux initramfs packaging enterprise network drivers (`ixgbe`, `i40e`, `bnxt_en`, `tg3`), `ipmitool`, `lsblk`, `lscpu`, and static Go agent binary.
+* **Frontend:** React / Vue 3 + TypeScript + Vite + TailwindCSS embedded directly in Go binary (`embed.FS`).
+* **Containerization:** Docker / Podman using `network_mode: host` for Layer-2 DHCP broadcast visibility.
