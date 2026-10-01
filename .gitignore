@@ -1,0 +1,17 @@
+# Node / Web
+node_modules/
+dist/
+.output/
+
+# OS / Temporary
+.DS_Store
+*.swp
+*~
+*.log
+.vscode/
+.idea/
+
+# RedWolf specific temporary build outputs
+build/
+iso/
+*.raw

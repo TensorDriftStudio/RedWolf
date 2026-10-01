@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RedWolf Brand Assets & Logos</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-red: #A6192E;
+      --accent-navy: #1D2433;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text-main);
+      padding: 2.5rem 1.5rem;
+      min-height: 100vh;
+    }
+    .header {
+      max-width: 1200px;
+      margin: 0 auto 3rem auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 1.5rem;
+    }
+    .header h1 {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .header span {
+      color: var(--accent-red);
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.35rem 0.8rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(166, 25, 46, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(166, 25, 46, 0.3);
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 2rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 1rem;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .card-preview {
+      height: 240px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      position: relative;
+      background-size: 20px 20px;
+    }
+    .bg-checker-dark {
+      background-color: #0f172a;
+      background-image: radial-gradient(#1e293b 1px, transparent 1px);
+    }
+    .bg-checker-light {
+      background-color: #ffffff;
+      background-image: radial-gradient(#e2e8f0 1px, transparent 1px);
+    }
+    .card-preview img {
+      max-width: 85%;
+      max-height: 85%;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 6px rgba(0,0,0,0.1));
+    }
+    .card-content {
+      padding: 1.25rem 1.5rem;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+    }
+    .card-desc {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-bottom: 1.25rem;
+      line-height: 1.4;
+    }
+    .asset-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.9rem;
+      border-radius: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--accent-red);
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #c0213b;
+    }
+    .btn-secondary {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+    }
+    .btn-secondary:hover {
+      background: #334155;
+      color: white;
+    }
+    .palette-box {
+      max-width: 1200px;
+      margin: 3rem auto 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+    }
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .color-swatch {
+      border-radius: 0.5rem;
+      padding: 1rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+    }
+    .swatch-red { background: #A6192E; color: white; }
+    .swatch-dark { background: #1D2433; color: white; }
+    .swatch-sub { background: #94A3B8; color: #0b0f19; }
+    .swatch-bg { background: #0F172A; color: white; border: 1px solid #334155; }
+  </style>
+</head>
+<body>
+
+  <header class="header">
+    <div>
+      <h1>Red<span>Wolf</span> Brand Identity</h1>
+      <p style="color: var(--text-muted); font-size: 0.95rem; margin-top: 0.25rem;">Oficjalne zasoby graficzne &amp; wektory dla interfejsu GUI oraz dokumentacji</p>
+    </div>
+    <div>
+      <span class="badge">Open Source Bare Metal Provisioning</span>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- Card 1: Horizontal Light -->
+    <div class="card">
+      <div class="card-preview bg-checker-light">
+        <img src="redwolf-horizontal.svg" alt="RedWolf Horizontal Logo Light">
+      </div>
+      <div class="card-content">
+        <div>
+          <div class="card-title">Logo Poziome (Jasny Motyw / Dokumentacja)</div>
+          <div class="card-desc">Idealne do paska nawigacyjnego (navbar), nagłówków dokumentacji i materiałów drukowanych.</div>
+        </div>
+        <div class="asset-links">
+          <a class="btn btn-primary" href="redwolf-horizontal.svg" download>Wektor SVG</a>
+          <a class="btn btn-secondary" href="redwolf-horizontal.png" download>PNG Transparentny</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2: Horizontal Dark -->
+    <div class="card">
+      <div class="card-preview bg-checker-dark">
+        <img src="redwolf-horizontal-dark.svg" alt="RedWolf Horizontal Logo Dark">
+      </div>
+      <div class="card-content">
+        <div>
+          <div class="card-title">Logo Poziome (Ciemny Motyw / GUI Dashboard)</div>
+          <div class="card-desc">Dedykowane do ciemnego interfejsu RedWolf Web Dashboard &amp; konsoli operatorskiej.</div>
+        </div>
+        <div class="asset-links">
+          <a class="btn btn-primary" href="redwolf-horizontal-dark.svg" download>Wektor SVG</a>
+          <a class="btn btn-secondary" href="redwolf-horizontal-dark.png" download>PNG Transparentny</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 3: Icon Only -->
+    <div class="card">
+      <div class="card-preview bg-checker-dark">
+        <img src="redwolf-icon.svg" alt="RedWolf Icon Emblem">
+      </div>
+      <div class="card-content">
+        <div>
+          <div class="card-title">Sygnatura / Ikona (Wolf Emblem)</div>
+          <div class="card-desc">Wektorowy wilk z symbolem zasilania i ścieżką PCB. Favicon, awatar, collapsed sidebar.</div>
+        </div>
+        <div class="asset-links">
+          <a class="btn btn-primary" href="redwolf-icon.svg" download>Wektor SVG</a>
+          <a class="btn btn-secondary" href="redwolf-icon-512.png" download>512px PNG</a>
+          <a class="btn btn-secondary" href="favicon.ico" download>Favicon .ICO</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 4: Stacked Logo Light -->
+    <div class="card">
+      <div class="card-preview bg-checker-light">
+        <img src="redwolf-logo.svg" alt="RedWolf Stacked Logo Light">
+      </div>
+      <div class="card-content">
+        <div>
+          <div class="card-title">Pełne Logo Pionowe (Jasny Motyw)</div>
+          <div class="card-desc">Wersja pionowa (stacked) do ekranów powitalnych (splash screen), okien modalnych "O programie".</div>
+        </div>
+        <div class="asset-links">
+          <a class="btn btn-primary" href="redwolf-logo.svg" download>Wektor SVG</a>
+          <a class="btn btn-secondary" href="redwolf-logo.png" download>1024px PNG</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 5: Stacked Logo Dark -->
+    <div class="card">
+      <div class="card-preview bg-checker-dark">
+        <img src="redwolf-logo-dark.svg" alt="RedWolf Stacked Logo Dark">
+      </div>
+      <div class="card-content">
+        <div>
+          <div class="card-title">Pełne Logo Pionowe (Ciemny Motyw)</div>
+          <div class="card-desc">Wersja pionowa zoptymalizowana pod ciemne ekrany logowania i instalatory konsolowe.</div>
+        </div>
+        <div class="asset-links">
+          <a class="btn btn-primary" href="redwolf-logo-dark.svg" download>Wektor SVG</a>
+          <a class="btn btn-secondary" href="redwolf-logo-dark.png" download>1024px PNG</a>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <section class="palette-box">
+    <h3 style="font-size: 1.1rem; font-weight: 700;">Paleta Barw RedWolf Brand</h3>
+    <div class="palette-grid">
+      <div class="color-swatch swatch-red">
+        <div>RedWolf Crimson</div>
+        <strong>#A6192E</strong>
+      </div>
+      <div class="color-swatch swatch-dark">
+        <div>Slate Navy (Light BG)</div>
+        <strong>#1D2433</strong>
+      </div>
+      <div class="color-swatch swatch-sub">
+        <div>Slate Text (Dark BG)</div>
+        <strong>#94A3B8</strong>
+      </div>
+      <div class="color-swatch swatch-bg">
+        <div>Dashboard Dark BG</div>
+        <strong>#0F172A</strong>
+      </div>
+    </div>
+  </section>
+
+</body>
+</html>
