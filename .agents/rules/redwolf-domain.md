@@ -1,18 +1,18 @@
-# Reguły Domenowe Projektu RedWolf
+# RedWolf Domain Rules
 
-## Cel projektu
-RedWolf automatyzuje proces przygotowania, inwentaryzacji i instalacji serwerów fizycznych (bare metal, m.in. Dell PowerEdge R640) oraz maszyn wirtualnych.
+## Project Objective
+RedWolf automates preparation, hardware inventory discovery, and operating system provisioning for bare-metal servers (specifically Dell PowerEdge R640 as reference) and virtual machines.
 
-## Standardowy Przepływ Wdrożeniowy
-1. Podłączenie fizyczne serwera:
-   - Zasilanie
-   - Sieć iDRAC / BMC (zarządzanie out-of-band)
-   - Pierwsza karta sieciowa (NIC 1) podpięta pod sieć provisioningową
-2. Start przez PXE z sieci provisioningowej.
-3. Usługi DHCP i TFTP zarządzane przez RedWolf dostarczają obraz agenta Discovery:
-   - Zbieranie metryk: Model procesora, model platformy (DMI), pojemność RAM, adresy MAC kart sieciowych.
-   - Konfiguracja BMC: Ustawienie loginu i hasła, przełączenie w tryb DHCP, odczyt pobranego adresu IP.
-4. Aktualizacja GUI RedWolf i oznaczenie serwera jako gotowy do instalacji ("Ready for provisioning").
-5. Wdrożenie wybranego systemu:
-   - Obsługiwane dystrybucje: AlmaLinux (8, 9, 10), Debian (12, 13).
-   - Metoda instalacji: Cloud-Init (partycjonowanie dysków, hasło root, docelowa konfiguracja sieciowa).
+## Standard Deployment Workflow
+1. Physical Server Connection:
+   - Redundant Power Supplies
+   - iDRAC / BMC dedicated management port
+   - First network adapter (NIC 1) connected to the provisioning network
+2. Node boots via PXE from the provisioning network.
+3. DHCP and TFTP/HTTP services managed by RedWolf deliver the in-memory Discovery Agent:
+   - Hardware telemetry extraction: CPU model/cores/threads, platform model/chassis (DMI/SMBIOS), total RAM, network interface MAC addresses, storage devices.
+   - BMC Configuration: Set secure credentials, enable DHCP mode on the BMC interface, retrieve assigned BMC IP.
+4. RedWolf Web GUI updates and marks node status as "Ready for Provisioning".
+5. Target OS deployment:
+   - Supported distributions: AlmaLinux (8, 9, 10), Debian (12, 13).
+   - Deployment mechanism: Cloud-Init (storage partitioning, root password, target network configuration).

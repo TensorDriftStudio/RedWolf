@@ -1,20 +1,20 @@
-# Specyfikacja Techniczna Projektu RedWolf
+# RedWolf Technical Specification
 
-## 1. Wstęp i Zakres Systemu
+## 1. Scope & System Overview
 
-**RedWolf** to system automatyzacji wdrożeń i inwentaryzacji dedykowany dla środowisk Data Center, platform bare metal (ze szczególnym uwzględnieniem **Dell PowerEdge R640**) oraz maszyn wirtualnych.
+**RedWolf** is an automated inventory discovery and operating system provisioning platform engineered for Data Center server environments, bare-metal hardware (with **Dell PowerEdge R640** serving as reference hardware), and virtual machines.
 
-Niniejszy dokument opisuje szczegółowe wymagania funkcjonalne, protokoły komunikacyjne, schematy danych i architekturę procesów.
+This document outlines the detailed functional requirements, communication protocols, telemetry schemas, and lifecycle workflows.
 
 ---
 
-## 2. Topologia Sieciowa i Faza Montażu
+## 2. Network Topology & Physical Racking
 
-### 2.1 Podłączenia fizyczne (Platforma Dell PowerEdge R640)
-W szafie serwerowej technik realizuje podłączenie fizyczne serwera:
-1. **Zasilanie:** PSU1 + PSU2 (redundantne zasilanie z szyn A i B).
-2. **Port BMC / iDRAC:** Dedykowany port RJ-45 iDRAC 9 podłączony do podsieci zarządzania (Out-of-band management).
-3. **Port Provisioningowy:** Port `NIC1` (pierwszy interfejs zintegrowanej karty sieciowej LOM / rNDC, np. `eno1` / `eth0`) podłączony do dedykowanego VLAN-u provisioningowego.
+### 2.1 Physical Cable Connections (Dell PowerEdge R640 Reference)
+In the server cabinet, the data center technician completes the following physical connections:
+1. **Power:** PSU1 and PSU2 connected to independent A/B power distribution units (PDUs).
+2. **BMC / iDRAC Port:** Dedicated 1GbE RJ-45 iDRAC 9 port connected to the Out-of-Band (OOB) management VLAN.
+3. **Provisioning Port:** Primary network interface (`NIC 1` / LOM port 1 / `eno1`) connected to the dedicated provisioning VLAN.
 
 ```text
 +---------------------------------------------------------------+
@@ -23,64 +23,67 @@ W szafie serwerowej technik realizuje podłączenie fizyczne serwera:
 |  [PSU 1] [PSU 2]     [iDRAC RJ-45]     [NIC 1] [NIC 2] [NIC 3]|
 +-----|-------|--------------|--------------|-------------------+
       |       |              |              |
-   Zasilanie A/B         VLAN OOB       VLAN Provisioning
-                      (Zarządzanie)      (DHCP/TFTP RedWolf)
+    Power A / B           OOB VLAN       Provisioning VLAN
+                        (Management)    (RedWolf DHCP/TFTP)
 ```
 
 ---
 
-## 3. Auto-Discovery i Boot Sieciowy (PXE / iPXE)
+## 3. Auto-Discovery & Network Boot (PXE / iPXE)
 
-### 3.1 Kontrola Usług Sieciowych przez RedWolf Core
-RedWolf automatycznie uruchamia i nadzoruje dwa komponenty w sieci provisioningowej:
-1. **Serwer DHCP:**
-   - Nasłuchuje żądań DHCP Discover na interfejsie provisioningowym.
-   - Identyfikuje architekturę klienta (DHCP Option 93: x86 BIOS vs UEFI x86_64).
-   - Zwraca `Next-Server` (IP RedWolf) oraz `Bootfile-Name` (`ipxe.efi` dla UEFI / `undionly.kpxe` dla BIOS).
-2. **Serwer TFTP & HTTP Boot:**
-   - Serwuje binarkę loader'a iPXE przez TFTP.
-   - Następnie iPXE przełącza się na szybki transfer HTTP w celu pobrania jądra Linuksa (`vmlinuz`) oraz ramdysku (`initramfs.img`) agenta **RedWolf Discovery**.
+### 3.1 Network Services Managed by RedWolf Core
+RedWolf automatically starts and orchestrates two core network services on the provisioning interface:
+1. **DHCP Server:**
+   - Listens for `DHCPDISCOVER` packets on the provisioning broadcast domain.
+   - Detects client architecture via DHCP Option 93 (UEFI x86_64 vs Legacy x86 BIOS).
+   - Returns `Next-Server` (RedWolf IP) and `Bootfile-Name` (`ipxe.efi` for UEFI / `undionly.kpxe` for legacy BIOS).
+2. **TFTP & HTTP Boot Services:**
+   - Transfers the initial iPXE chainloader via TFTP.
+   - iPXE immediately chains over high-throughput HTTP to retrieve the Linux kernel (`vmlinuz`) and the **RedWolf Discovery Agent** initramfs (`initramfs.img`).
 
-### 3.2 Działanie Agenta RedWolf Discovery
-Agent uruchamia się w pamięci RAM węzła bez dotykania zainstalowanych dysków twardych.
+### 3.2 RedWolf Discovery Agent Lifecycle
+The discovery agent executes completely in RAM without touching local storage drives.
 
-#### A. Zbieranie inwentarza sprzętowego:
-- **Procesor (CPU):**
-  - Wykrywany z `/proc/cpuinfo` oraz `lscpu`.
-  - Model (np. `Intel(R) Xeon(R) Gold 6140 CPU @ 2.30GHz`).
-  - Liczba gniazd (sockets), rdzeni fizycznych (cores) i wątków (threads).
-  - Flagi wirtualizacji (VT-x) i AES-NI.
-- **Model platformy i płyty głównej:**
-  - Wykrywany przez `dmidecode -s system-manufacturer`, `system-product-name`, `system-serial-number`.
-  - Weryfikacja: `Dell Inc. PowerEdge R640` wraz z Service Tag.
-- **Pamięć RAM:**
-  - Całkowity rozmiar w GiB/GB.
-  - Obsadzenie banków pamięci (`dmidecode -t memory`): taktowanie, typ (DDR4 ECC Reg), liczba modułów.
-- **Karty Sieciowe (NIC):**
-  - Wykrywane przez `/sys/class/net/*` oraz `ip -j link`.
-  - Lista wszystkich fizycznych interfejsów wraz z adresami MAC, prędkościami (1GbE / 10GbE / 25GbE) i modelem kontrolera (PCI ID).
+#### A. Hardware Inventory Gathering:
+- **Processor (CPU):**
+  - Queried via `/proc/cpuinfo` and `lscpu`.
+  - Captures processor model (e.g. `Intel(R) Xeon(R) Gold 6140 CPU @ 2.30GHz`).
+  - Total sockets, physical cores per socket, logical threads per socket.
+  - Virtualization extensions (VT-x, AMD-V) and crypto flags (AES-NI).
+- **Platform & Chassis DMI:**
+  - Extracted via `dmidecode -s system-manufacturer`, `system-product-name`, and `system-serial-number`.
+  - Validates `Dell Inc. PowerEdge R640` and records the Dell Service Tag.
+- **System Memory (RAM):**
+  - Total usable and installed memory capacity in bytes / GiB.
+  - DIMM slot mapping via `dmidecode -t memory`: channel layout, memory type (DDR4 ECC Registered), and module frequencies.
+- **Network Interface Cards (NICs):**
+  - Discovered via `/sys/class/net/*` and `ip -j link`.
+  - Records MAC addresses, physical link states, negotiated speeds (1GbE / 10GbE / 25GbE), and PCI bus locations.
+- **Storage Devices:**
+  - Enumerated via `lsblk -J -b -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA,TRAN`.
+  - Distinguishes NVMe SSDs, SAS/SATA drives, and Dell BOSS-S1 boot controllers.
 
-#### B. Konfiguracja BMC / iDRAC (Lokalnie przez IPMI KCS):
-- W środowisku fabrycznym lub po resecie BMC może nie posiadać adresu IP lub mieć domyślne dane logowania.
-- Agent Discovery ładuje moduły jądra `ipmi_si` oraz `ipmi_devintf`.
-- Przez lokalny kanał KCS (bez konieczności wcześniejszej znajomości IP czy hasła iDRAC) agent wykonuje:
+#### B. BMC / iDRAC Automation (In-Band via IPMI KCS):
+- New or unconfigured servers often do not have static IP addresses or knowable credentials on the iDRAC port.
+- The discovery agent loads the `ipmi_si` and `ipmi_devintf` kernel modules to communicate over the local motherboard KCS (Keyboard Controller Style) interface.
+- Without requiring network access to iDRAC, the agent executes:
   ```bash
-  # 1. Konfiguracja konta administratora BMC
+  # 1. Configure dedicated administrator account on BMC
   ipmitool user set name 2 <REDWOLF_BMC_USER>
   ipmitool user set password 2 <REDWOLF_BMC_PASSWORD>
   ipmitool user enable 2
   ipmitool channel setaccess 1 2 callin=on ipmi=on link=on privilege=4
 
-  # 2. Przełączenie BMC na pobieranie adresu z DHCP
+  # 2. Configure BMC interface to acquire IP via DHCP
   ipmitool lan set 1 ipsrc dhcp
 
-  # 3. Oczekiwanie i odpytanie o przydzielony adres IP
+  # 3. Poll for assigned BMC IP address
   ipmitool lan print 1 | grep "IP Address"
   ```
-- Odczytany adres IP iDRAC, MAC iDRAC oraz status zostają dołączone do raportu.
+- The acquired BMC IP address, BMC MAC address, and credential confirmation are stored in the telemetry payload.
 
-#### C. Wysłanie raportu telemetrycznego:
-Agent wysyła pakiet JSON na endpoint API RedWolf Core: `POST /api/v1/discovery/report`.
+#### C. Telemetry Payload Transmission:
+The agent posts a structured JSON payload to the RedWolf Core API endpoint: `POST /api/v1/discovery/report`.
 
 ```json
 {
@@ -148,45 +151,45 @@ Agent wysyła pakiet JSON na endpoint API RedWolf Core: `POST /api/v1/discovery/
 
 ---
 
-## 4. Prezentacja w GUI RedWolf
+## 4. RedWolf GUI Node Representation
 
-Gdy węzeł prześle raport:
-1. Rekord w bazie danych przechodzi w stan `READY_FOR_PROVISIONING`.
-2. W panelu webowym pojawia się karta serwera z badge'em **"Gotowy do wdrożenia"**.
-3. Administrator widzi:
-   - Pełną specyfikację podzespołów (CPU, RAM, MACi, dyski).
-   - Bezpośredni link do konsoli webowej iDRAC (`https://<BMC_IP>`).
-   - Przycisk **"Rozpocznij Provisioning"** uruchamiający kreator wdrożenia.
+Upon receipt of the telemetry report:
+1. The server record in the database transitions to state `READY_FOR_PROVISIONING`.
+2. The Web Dashboard displays an interactive server card with the **"Ready for Provisioning"** badge.
+3. The operator sees:
+   - Full hardware summary (CPU, RAM, MAC table, physical disks).
+   - Direct link to the iDRAC web console (`https://<BMC_IP>`).
+   - A **"Deploy Server"** button launching the provisioning configuration wizard.
 
 ---
 
-## 5. Silnik Wdrożenia Systemu (Cloud-Init)
+## 5. Cloud-Init OS Provisioning Engine
 
-### 5.1 Wspierane Systemy Operacyjne
-RedWolf wspiera instalację następujących systemów z pełną automatyzacją:
+### 5.1 Supported Operating Systems
+RedWolf provides automated deployment workflows for:
 - **AlmaLinux 8**
 - **AlmaLinux 9**
 - **AlmaLinux 10**
 - **Debian 12 (Bookworm)**
 - **Debian 13 (Trixie)**
 
-### 5.2 Formularz Konfiguracyjny w GUI:
-1. **Wybór dystrybucji i wersji.**
-2. **Partycjonowanie dysków:**
-   - Dysk docelowy (np. `/dev/sda` lub RAID BOSS-S1).
-   - Układ: Standardowy (`/boot/efi`, `/boot`, `/`, `swap`) lub zaawansowany LVM.
-3. **Bezpieczeństwo i Dostęp:**
-   - Hasło użytkownika `root` (haszowane algorytmem SHA-512 crypt `$6$`).
-   - Lista autoryzowanych kluczy SSH dla `root` i użytkownika administracyjnego.
-4. **Docelowa Konfiguracja Sieciowa:**
-   - Wybór interfejsu produkcyjnego lub konfiguracji typu Bond (np. `bond0` z `eno1` + `eno2` w trybie LACP 802.3ad).
-   - Tryb IP: Statyczny (Adres IP, Maska CIDR, Brama domyślna, Serwery DNS) lub DHCP.
-   - Tagowanie VLAN (opcjonalne).
+### 5.2 Wizard Configuration Parameters:
+1. **Operating System Selection:** Target distribution and version.
+2. **Storage Layout & Partitioning:**
+   - Target drive selection (e.g. `/dev/sda` or Dell BOSS-S1 virtual drive).
+   - Layout mode: Standard partitions (`/boot/efi`, `/boot`, `/`, `swap`) or LVM with flexible volume groups.
+3. **Security & Access Control:**
+   - Root password (hashed using SHA-512 crypt `$6$`).
+   - Authorized SSH public keys for root and default administrative accounts.
+4. **Target Production Networking:**
+   - Interface selection or NIC bonding (e.g. `bond0` combining `eno1` + `eno2` using 802.3ad LACP).
+   - Network addressing: Static IP (IPv4 CIDR, default gateway, DNS servers) or production DHCP.
+   - Optional VLAN tagging (802.1Q).
 
-### 5.3 Generowanie Metadanych Cloud-Init i Instalacja
-RedWolf generuje pakiet konfiguracyjny serwowany przez wbudowane API HTTP (`http://<REDWOLF_IP>/cloud-init/<MAC>/`):
-- `user-data`: definicja użytkowników, kluczy SSH, hasła root, pakietów początkowych (`qemu-guest-agent`, `curl`, `htop`).
-- `meta-data`: `instance-id`, `local-hostname`.
-- `network-config`: standard Netplan v2 / NetworkManager / ifupdown zależnie od wybranej dystrybucji.
+### 5.3 Metadata Rendering & Execution
+RedWolf renders the metadata and serves it via an authenticated HTTP endpoint (`http://<REDWOLF_IP>/cloud-init/<MAC>/`):
+- `user-data`: Defines users, authorized keys, password hashes, package repositories, and initial tooling (`qemu-guest-agent`, `curl`, `htop`).
+- `meta-data`: Defines `instance-id` and `local-hostname`.
+- `network-config`: Standard Netplan v2 or NetworkManager configuration.
 
-Instalator pobiera obraz bazowy (raw/qcow2 cloud-image), rozpakowuje go bezpośrednio na dyski docelowe węzła, aplikuje Cloud-Init, a następnie restartuje serwer do gotowego systemu produkcyjnego.
+The provisioning engine streams the target base image to disk, injects the Cloud-Init configuration, triggers local bootloader installation, and commands the node to reboot into production.

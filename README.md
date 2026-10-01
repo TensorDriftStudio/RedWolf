@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Nowoczesny, otwarty system automatycznego provisioningu serwerów Bare Metal i maszyn wirtualnych</strong>
+  <strong>Modern, open-source automated provisioning platform for Bare Metal servers and Virtual Machines</strong>
 </p>
 
 <p align="center">
@@ -15,139 +15,140 @@
 
 ---
 
-## 🐺 O projekcie RedWolf
+## 🐺 About RedWolf
 
-**RedWolf** to narzędzie open source stworzone z myślą o inżynierach data center, administratorach systemowych i DevOps. Jego celem jest zminimalizowanie czasu i manualnej pracy potrzebnej do uruchomienia nowo dostarczonego serwera fizycznego w szafie serwerowej (ang. *rack & roll*) oraz maszyn wirtualnych.
+**RedWolf** is an open-source bare-metal and virtual machine automation system built for data center infrastructure engineers, sysadmins, and DevOps teams. Its purpose is to streamline server installation, turning bare hardware racking into a zero-touch, hands-off provisioning process.
 
-Platformą referencyjną i pierwszym celem wdrożeniowym projektu jest **Dell PowerEdge R640**, z zachowaniem pełnej elastyczności dla pozostałych platform serwerowych x86_64 oraz środowisk wirtualnych (KVM, Proxmox, VMware).
+The primary reference hardware platform for initial development is the **Dell PowerEdge R640**, while maintaining broad support for generic x86_64 server platforms and virtualized environments (KVM, Proxmox, VMware).
 
 ---
 
-## ⚡ Scenariusz Działania (Workflow Technika)
+## ⚡ Technician Deployment Workflow
 
-Tradycyjny provisioning wymaga ręcznego logowania się do konsoli monitora serwera, konfigurowania BIOS/iDRAC, podpinania pendrive'ów lub ręcznego ustawiania adresów IP. **RedWolf eliminuje wszystkie te kroki:**
+Traditional provisioning requires connecting local monitors/keyboards, manually configuring BIOS and iDRAC settings, flashing USB media, or manually assigning static IPs. **RedWolf eliminates all manual setup:**
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Tech as 👷 Technik DC
+    actor Tech as 👷 DC Technician
     participant Srv as 🖥️ Dell PowerEdge R640
     participant RW as 🐺 RedWolf (DHCP/TFTP/Core)
     participant BMC as 🔌 iDRAC / BMC
     actor Admin as 💻 Admin (RedWolf GUI)
 
-    Tech->>Srv: 1. Montaż w szafie RACK
-    Tech->>Srv: 2. Podpięcie zasilania, sieci iDRAC i sieci provisioning (NIC 1)
-    Tech->>Srv: 3. Uruchomienie serwera w trybie PXE
-    Note over Srv,RW: Serwer pyta o DHCP w sieci provisioningowej
-    RW->>Srv: 4. DHCP & TFTP serwuje mikrosystem RedWolf Discovery
-    Srv->>Srv: 5. Uruchomienie Discovery Agent w pamięci RAM
-    Srv->>Srv: 6. Odczyt CPU, Modelu, RAM, adresów MAC
-    Srv->>BMC: 7. Konfiguracja loginu/hasła i trybu DHCP w iDRAC (via KCS/IPMI)
-    BMC-->>Srv: 8. Przydzielony adres IP iDRAC
-    Srv->>RW: 9. Raport telemetryczny z inwentarzem serwera
-    RW->>Admin: 10. Wyświetlenie węzła w GUI (Status: "Gotowy do provisioningu")
-    Admin->>RW: 11. Wybór OS (AlmaLinux / Debian) + partycjonowanie + hasło root + sieć
-    RW->>Srv: 12. Instalacja docelowego systemu przez Cloud-Init
+    Tech->>Srv: 1. Mount server in rack
+    Tech->>Srv: 2. Connect Power, iDRAC OOB, and Provisioning NIC (NIC 1)
+    Tech->>Srv: 3. Power on server with PXE Boot
+    Note over Srv,RW: Server requests DHCP on provisioning subnet
+    RW->>Srv: 4. DHCP & TFTP serves in-memory RedWolf Discovery Agent
+    Srv->>Srv: 5. Discovery Agent boots into RAM
+    Srv->>Srv: 6. Gathers CPU, platform model, RAM, NIC MACs, storage
+    Srv->>BMC: 7. Sets BMC credentials & enables DHCP on BMC via IPMI (KCS)
+    BMC-->>Srv: 8. Queries assigned BMC IP address
+    Srv->>RW: 9. Transmits full hardware inventory report via API
+    RW->>Admin: 10. Server appears in GUI (Status: "Ready for Provisioning")
+    Admin->>RW: 11. Selects OS (AlmaLinux / Debian) + partitioning + root pass + network
+    RW->>Srv: 12. Deploys target OS image with Cloud-Init configuration
 ```
 
-### Krok po kroku:
+### Step-by-Step Breakdown:
 
-1. **Podłączenie fizyczne serwera:**
-   Technik instaluje serwer (np. Dell PowerEdge R640) w szafie i podłącza dokładnie 3 kable:
-   - **a) Zasilanie** (redundantne zasilacze PSU1/PSU2)
-   - **b) Sieć iDRAC / BMC** (dedykowany port zarządzania out-of-band)
-   - **c) Sieć provisioningową** (pierwszy port karty sieciowej: NIC 1 / eth0 / LOM1)
+1. **Physical Server Mounting:**
+   The technician mounts the server (e.g. Dell PowerEdge R640) into the server rack and connects exactly 3 cables:
+   - **a) Power:** Redundant Power Supplies (PSU1 / PSU2)
+   - **b) iDRAC / BMC:** Dedicated Out-of-band (OOB) management RJ-45 port
+   - **c) Provisioning Network:** First physical network port (NIC 1 / eth0 / onboard 1GbE/10GbE LOM)
 
-2. **Start PXE:**
-   Technik włącza zasilanie. Serwer uruchamia się przez sieć (PXE Boot).
+2. **PXE Boot:**
+   The technician powers on the server. The node boots via PXE network boot.
 
-3. **Przejęcie przez RedWolf (Auto-Discovery):**
-   - RedWolf automatycznie zarządza usługami **DHCP** i **TFTP** w odizolowanej sieci provisioningowej.
-   - Po starcie PXE serwer ładuje przez sieć lekki obraz in-memory (**RedWolf Discovery Agent**).
-   - Agent automatycznie i bez ingerencji człowieka wykonuje:
-     - **Inwentaryzację podzespołów:**
-       - Model i architektura procesora (CPU)
-       - Model platformy/obudowy (np. `Dell Inc. PowerEdge R640`)
-       - Całkowita ilość pamięci RAM i obsadzenie slotów DIMM
-       - Adresy MAC wszystkich zainstalowanych kart sieciowych
-     - **Automatyzację iDRAC / BMC:**
-       - Ustawienie zdefiniowanego przez administratora bezpiecznego loginu i hasła do BMC
-       - Włączenie trybu DHCP na interfejsie sieciowym BMC
-       - Odczytanie uzyskanego przez BMC adresu IP
+3. **Autonomous Takeover by RedWolf (Auto-Discovery):**
+   - RedWolf controls integrated **DHCP** and **TFTP/HTTP** services on the isolated provisioning network.
+   - Upon network boot, the server loads a lightweight in-memory micro-OS (**RedWolf Discovery Agent**).
+   - The agent automatically executes without human intervention:
+     - **Hardware Inventory Discovery:**
+       - CPU model, architecture, sockets, physical cores, and logical threads
+       - Platform & chassis model (e.g. `Dell Inc. PowerEdge R640`) and Service Tag
+       - Total RAM capacity, speed, and DIMM slot population
+       - MAC addresses, link speeds, and PCI topology of all network interfaces
+       - Attached storage drives (NVMe, SSD, HDD, BOSS controllers)
+     - **BMC / iDRAC Automation:**
+       - Configures a secure, pre-defined administrator username and password
+       - Switches BMC network interface into DHCP mode
+       - Queries and records the dynamically assigned BMC IP address
 
-4. **Prezentacja w GUI RedWolf:**
-   - Wszystkie zebrane dane telemetryczne trafiają w czasie rzeczywistym do panelu webowego RedWolf.
-   - Węzeł zmienia status na **"Gotowy do provisioningu"** (*Ready for Provisioning*).
+4. **Real-time RedWolf GUI Dashboard:**
+   - All collected telemetry is sent back to the RedWolf Core API.
+   - The node is displayed in the Web GUI with the status **"Ready for Provisioning"**.
 
-5. **Wdrożenie Systemu Operacyjnego przez Cloud-Init:**
-   Z poziomu interfejsu graficznego RedWolf administrator wybiera docelowy system i parametry:
-   - **Dystrybucje systemowe:**
-     - **AlmaLinux:** wersje `8`, `9`, `10`
-     - **Debian:** wersje `12 (Bookworm)`, `13 (Trixie)`
-   - **Konfiguracja wdrożenia:**
-     - **Partycjonowanie dysków:** schemat automatyczny (LVM, RAID 1/5/10, dyski SSD/NVMe/HDD, SWAP, montowania)
-     - **Konta i dostęp:** hasło użytkownika `root`, wstrzyknięcie kluczy publicznych SSH
-     - **Konfiguracja sieciowa serwera:** docelowy adres IP (statyczny / DHCP), brama, serwery DNS, bonding (LACP 802.3ad) lub podział na VLAN-y
+5. **Cloud-Init OS Deployment:**
+   From the RedWolf graphical interface, the administrator selects the desired OS and parameters:
+   - **Supported Distributions:**
+     - **AlmaLinux:** versions `8`, `9`, `10`
+     - **Debian:** versions `12 (Bookworm)`, `13 (Trixie)`
+   - **Deployment Settings:**
+     - **Storage & Partitioning:** Automated disk layout (LVM, software RAID 1/5/10, SSD/NVMe/HDD targets, swap, mount points)
+     - **Authentication & Security:** Root user password (hashed using SHA-512 crypt `$6$`) and authorized SSH public keys
+     - **Target Production Network:** Production IP mode (Static IP or DHCP), gateway, DNS nameservers, LACP bonding (802.3ad), or VLAN tagging
 
 ---
 
-## 📁 Struktura Repozytorium
+## 📁 Repository Layout
 
 ```text
 RedWolf/
-├── AGENTS.md                  # Wytyczne i kontekst dla sztucznej inteligencji (AI rules)
-├── GEMINI.md                  # Dowiązanie do wytycznych agentów AI
-├── README.md                  # Główny opis projektu (ten plik)
+├── AGENTS.md                  # Comprehensive AI guidelines & architecture context (English only)
+├── GEMINI.md                  # Symlink to AI guidelines
+├── README.md                  # Main project documentation (this file)
 ├── .agents/
 │   └── rules/
-│       └── redwolf-domain.md  # Reguły domenowe dla asystentów AI
+│       ├── language-policy.md # Mandatory English-only enforcement rule
+│       └── redwolf-domain.md  # Core domain rules for assistants
 ├── assets/
-│   └── logo/                  # Wektorowe i rastrowe logo RedWolf
-│       ├── redwolf-horizontal.svg       # Główne logo poziome (jasne)
-│       ├── redwolf-horizontal-dark.svg  # Logo poziome do ciemnego GUI
-│       ├── redwolf-icon.svg             # Samodzielna sygnatura / ikona
-│       ├── redwolf-logo.svg             # Pełne logo pionowe
-│       ├── redwolf-logo-dark.svg        # Pełne logo pionowe ciemne
-│       ├── favicon.ico / favicon.png    # Ikony przeglądarkowe
-│       ├── index.html                   # Interaktywny podgląd logotypów
-│       └── *.png                        # Wersje rastrowe (32px, 64px, 128px, 256px, 512px, 1024px)
+│   └── logo/                  # Vector SVG and high-resolution PNG brand assets
+│       ├── redwolf-horizontal.svg       # Primary horizontal logo (light theme)
+│       ├── redwolf-horizontal-dark.svg  # Horizontal logo for dark GUI
+│       ├── redwolf-icon.svg             # Standalone wolf emblem / icon
+│       ├── redwolf-logo.svg             # Full stacked logo
+│       ├── redwolf-logo-dark.svg        # Full stacked logo dark
+│       ├── favicon.ico / favicon.png    # Browser and application favicons
+│       ├── index.html                   # Interactive brand asset gallery
+│       └── *.png                        # Transparent PNG exports (32px to 1024px)
 ├── docs/
-│   ├── ARCHITECTURE.md        # Szczegółowa architektura systemu
-│   └── SPECIFICATION.md       # Kompletna specyfikacja techniczna
+│   ├── ARCHITECTURE.md        # Modular system architecture document
+│   └── SPECIFICATION.md       # Full engineering specification
 ```
 
 ---
 
-## 🎨 Zasoby Wizualne i Logo
+## 🎨 Visual Assets & Branding
 
-Logo projektu RedWolf zostało przygotowane w formacie wektorowym SVG oraz rastrowym PNG z przezroczystym tłem:
+The RedWolf logo has been converted into lossless vector SVGs and transparent PNGs:
 
-| Format / Wariant | Podgląd | Przeznaczenie |
+| Variant | Description | Target Use Case |
 | :--- | :--- | :--- |
-| **Ikona / Emblem** (`assets/logo/redwolf-icon.svg`) | Wilcza głowa z przyciskiem Power i ścieżką PCB | Favicon, awatary, zwinięty pasek boczny |
-| **Poziome Jasne** (`assets/logo/redwolf-horizontal.svg`) | Sygnatura + napis RedWolf + Open Source Provisioning | Nagłówki dokumentacji, jasny interfejs |
-| **Poziome Ciemne** (`assets/logo/redwolf-horizontal-dark.svg`) | Wariant z jasną typografią `#F8FAFC` | Główny pasek nawigacyjny ciemnego GUI |
-| **Pionowe Stacked** (`assets/logo/redwolf-logo.svg`) | Duży układ pionowy | Splash screen, ekrany logowania, dialogi |
+| **Icon / Emblem** (`assets/logo/redwolf-icon.svg`) | Howling wolf with integrated power button and circuit node | Favicon, avatars, collapsed sidebar |
+| **Horizontal Light** (`assets/logo/redwolf-horizontal.svg`) | Emblem + RedWolf brand + Open Source Provisioning | Documentation, light headers, print |
+| **Horizontal Dark** (`assets/logo/redwolf-horizontal-dark.svg`) | Optimized with `#F8FAFC` typography | Main navigation bar of dark Web Dashboard |
+| **Stacked Logo** (`assets/logo/redwolf-logo.svg`) | Vertical arrangement | Splash screens, modal dialogs, login views |
 
-Podgląd wszystkich wariantów w przeglądarce dostępny jest w pliku [assets/logo/index.html](file:///home/dawid/RedWolf/assets/logo/index.html).
-
----
-
-## 🚀 Plan Rozwoju (Roadmap)
-
-- [x] Opracowanie założeń architektonicznych i specyfikacji wdrożenia.
-- [x] Wektoryzacja, oczyszczenie i standaryzacja logo (SVG, PNG, dark/light theme).
-- [x] Przygotowanie instrukcji dla agentów AI (`AGENTS.md`, `.agents/rules/`).
-- [ ] Implementacja demona sieciowego DHCP/TFTP zintegrowanego z RedWolf Core.
-- [ ] Przygotowanie minimalnego obrazu bootowalnego `redwolf-discovery` (initramfs + busybox/alpine + ipmitool).
-- [ ] Implementacja panelu GUI (Web Dashboard: inwentaryzacja, status maszyn, kreator instalacji).
-- [ ] Generator szablonów Cloud-Init dla AlmaLinux 8/9/10 i Debian 12/13.
-- [ ] Testy integracyjne na platformie Dell PowerEdge R640.
+A live gallery demonstrating all variants in light and dark themes is available in [`assets/logo/index.html`](file:///home/dawid/RedWolf/assets/logo/index.html).
 
 ---
 
-## 📄 Licencja
+## 🚀 Roadmap
 
-Projekt rozwijany jako oprogramowanie open source.
-Szczegóły licencji zostaną opublikowane wraz z pierwszym wydaniem kodu źródłowego.
+- [x] Initial architectural design and provisioning specifications.
+- [x] Lossless vectorization, optimization, and standardization of logo assets (SVG, PNG, dark/light themes).
+- [x] Contributor and AI assistant guidelines (`AGENTS.md`, `.agents/rules/`).
+- [ ] Implement integrated DHCP and TFTP network services in RedWolf Core.
+- [ ] Build minimal `redwolf-discovery` in-memory bootable image (initramfs + busybox/alpine + ipmitool).
+- [ ] Implement RedWolf Web GUI Dashboard (inventory table, node state transitions, provisioning wizard).
+- [ ] Develop Cloud-Init template rendering engine for AlmaLinux 8/9/10 and Debian 12/13.
+- [ ] End-to-end bare-metal validation on Dell PowerEdge R640 hardware.
+
+---
+
+## 📄 License
+
+RedWolf is developed as open-source software. License details will be published alongside the initial source release.

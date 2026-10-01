@@ -1,87 +1,89 @@
-# AGENTS.md - Instrukcje i kontekst projektu RedWolf dla AI
+# AGENTS.md - RedWolf Project Guidelines and AI Context
 
-Ten plik stanowi główne źródło wiedzy architektonicznej i kontekstu projektowego dla modeli AI asystujących przy rozwoju projektu **RedWolf**.
+This file serves as the primary source of architectural context, domain knowledge, and development rules for AI assistants and contributors working on **RedWolf**.
 
 ---
 
-## 🐺 Czym jest RedWolf?
+## 🚨 MANDATORY LANGUAGE POLICY: ENGLISH ONLY
 
-**RedWolf** to nowoczesne, otwarte (open source) narzędzie do automatycznego provisioningu serwerów fizycznych (**bare metal**) oraz maszyn wirtualnych (**VM**), zaprojektowane z myślą o prostocie wdrożenia w szafach serwerowych i centrach danych.
+> **CRITICAL RULE FOR ALL AI ASSISTANTS AND CONTRIBUTORS:**
+> **Do NOT use the Polish language (or any language other than English) anywhere in this repository or in conversations.**
+> - All documentation, guides, and specifications must be in **English only**.
+> - All code, comments, docstrings, variable/function names must be in **English only**.
+> - All commit messages, PR descriptions, and git history must be in **English only**.
+> - All UI text, error messages, and API payloads must be in **English only**.
+> - All assistant responses and explanations to the user must be conducted strictly in **English**.
 
-### Główny use-case (Workflow technika w Data Center):
-1. **Montaż fizyczny:** Technik wsuwa serwer (np. platformę referencyjną **Dell PowerEdge R640**) do szafy rack i podłącza:
-   - Zasilanie (PSU1 / PSU2)
-   - Dedykowany port BMC / iDRAC do sieci zarządzania
-   - Pierwszą kartę sieciową (NIC1 / eth0 / onboard 1GbE/10GbE) do sieci provisioningowej
-2. **Boot PXE:** Technik uruchamia serwer z opcją bootowania sieciowego PXE (lub serwer bootuje z PXE domyślnie przy braku systemu na dyskach).
-3. **Akcja RedWolf (Autonomiczne przejęcie):**
-   - RedWolf zarządza zintegrowanymi usługami **DHCP** i **TFTP** w dedykowanej sieci provisioningowej.
-   - Po starcie PXE serwer pobiera i uruchamia lekki obraz micro-OS (RedWolf Discovery Agent / ramdisk).
-   - Obraz automatycznie:
-     - **Zbiera inwentarz sprzętowy:** model platformy/obudowy (np. Dell PowerEdge R640), procesor (model, rdzenie, wątki), pamięć RAM (pojemność, konfiguracja kanałów/banków), adresy MAC wszystkich interfejsów sieciowych.
-     - **Automatyzuje konfigurację BMC / iDRAC:** za pośrednictwem lokalnego interfejsu KCS / `ipmitool` / OpenIPMI / Redfish konfiguruje bezpieczny login i hasło administratora BMC, wymusza tryb DHCP na interfejsie BMC oraz pobiera przydzielony adres IP BMC.
-4. **Prezentacja w GUI:**
-   - Agent discovery odsyła pełen raport telemetryczny przez API do RedWolf Core.
-   - Serwer pojawia się w GUI RedWolf ze statusem **"Gotowy do provisioningu"** (*Ready for Provisioning*).
-5. **Instalacja systemu (Cloud-Init):**
-   - Użytkownik w GUI wybiera system operacyjny:
+---
+
+## 🐺 What is RedWolf?
+
+**RedWolf** is a modern, open-source bare-metal and virtual machine (VM) automated provisioning platform designed for simplicity, speed, and zero-touch deployment in data center server racks and homelabs.
+
+### Primary Use Case (Data Center Technician Workflow):
+1. **Physical Server Installation:** A technician mounts an enterprise server (reference platform: **Dell PowerEdge R640**) into the rack and connects:
+   - Redundant Power Supplies (PSU1 / PSU2)
+   - Dedicated iDRAC / BMC port to the Out-of-band (OOB) management network
+   - First network port (NIC1 / eth0 / onboard 1GbE/10GbE LOM) to the provisioning network
+2. **PXE Boot:** The technician powers on the server and initiates a network boot (PXE), or the server boots via PXE by default if disks are unpartitioned.
+3. **RedWolf Autonomous Takeover:**
+   - RedWolf manages integrated **DHCP** and **TFTP/HTTP Boot** services on the dedicated provisioning network.
+   - Upon PXE boot, the node loads and runs a lightweight in-memory micro-OS (**RedWolf Discovery Agent** / ramdisk).
+   - The Discovery Agent automatically:
+     - **Collects Hardware Inventory:** platform/chassis model (e.g. Dell PowerEdge R640, Service Tag), CPU details (model, sockets, cores, threads), RAM (total capacity, DIMM slots configuration), MAC addresses of all detected network interfaces, and disk storage devices.
+     - **Automates BMC / iDRAC Configuration:** via the local in-band KCS interface using `ipmitool` / OpenIPMI / Redfish, configures a secure administrator username and password, enables DHCP mode on the BMC interface, and retrieves the assigned BMC IP address.
+4. **GUI Presentation:**
+   - The Discovery Agent sends a telemetry report via HTTP API to RedWolf Core.
+   - The server appears in real-time in the RedWolf Web GUI with the status **"Ready for Provisioning"**.
+5. **Operating System Deployment (Cloud-Init):**
+   - The administrator selects the target operating system in the GUI:
      - **AlmaLinux 8, 9, 10**
-     - **Debian 12, 13**
-   - Użytkownik konfiguruje parametry wdrożenia:
-     - Schemat partycjonowania dysków (LVM, RAID software, dyski NVMe/SSD/HDD)
-     - Hasło root oraz opcjonalne klucze SSH
-     - Docelową konfigurację sieciową (IP statyczne/DHCP, bonding LACP, VLANy, bramę, serwery DNS)
-   - RedWolf generuje metadane `cloud-init` / kickstart / preseed, instruuje węzeł do instalacji, a po restarcie serwer jest w pełni skonfigurowany i produkcyjny.
+     - **Debian 12 (Bookworm), 13 (Trixie)**
+   - The administrator configures deployment parameters:
+     - Disk partitioning scheme (LVM, software RAID, NVMe/SSD/HDD target drives, swap)
+     - Root password and authorized SSH public keys
+     - Target production network configuration (Static IP / DHCP, gateway, DNS, LACP bonding, VLANs)
+   - RedWolf renders cloud-init (`user-data`, `meta-data`, `network-config`), streams the base OS image to disk, applies configuration, and reboots the server into a fully operational production state.
 
 ---
 
-## 🏛️ Architektura Systemu RedWolf
-
-Projekt składa się z następujących modułów:
+## 🏛️ System Architecture
 
 1. **`redwolf-core` (Backend & Orchestrator):**
-   - Zarządza stanem serwerów (FSM: `DISCOVERED` -> `READY_FOR_PROVISIONING` -> `PROVISIONING` -> `INSTALLED` -> `FAILED`).
-   - Wbudowane lub zarządzane usługi sieciowe:
-     - **DHCP Server:** przydzielanie adresów IP w podsieci provisioningowej oraz opcji PXE (Next-Server, Bootfile Name dla iPXE / GRUB2).
-     - **TFTP / HTTP Boot Server:** serwowanie loaderów iPXE, kernela i ramdysku agenta discovery.
-   - REST / gRPC / WebSocket API dla agenta discovery i interfejsu graficznego (GUI).
-   - Silnik szablonowania instalatorów i Cloud-Init (`user-data`, `meta-data`, `network-config`).
+   - Finite State Machine (FSM): `DISCOVERED` -> `COLLECTING_TELEMETRY` -> `READY_FOR_PROVISIONING` -> `PROVISIONING` -> `ACTIVE` / `FAILED`.
+   - Built-in/managed network services:
+     - **DHCP Server:** provisioning subnet address allocation and PXE options (Next-Server, Bootfile Name for iPXE / UEFI).
+     - **TFTP / HTTP Boot Server:** serving iPXE binaries, Linux kernels (`vmlinuz`), and discovery initramfs.
+   - REST / WebSocket API for agents and the frontend.
+   - Cloud-Init metadata templating engine (`user-data`, `meta-data`, `network-config` v2).
 
 2. **`redwolf-discovery` (Discovery Agent & Live Boot Image):**
-   - Minimalny obraz Linuksa uruchamiany w RAM (initramfs oparty o Alpine Linux lub minimalny Busybox/Buildroot/Debian kernel).
-   - Skrypt/demon discovery zbierający dane przez `dmidecode`, `lshw`, `/proc/cpuinfo`, `sysfs`, `ip link`.
-   - Moduł komunikacji z BMC (moduł jądra `ipmi_si`, `ipmi_devintf`, narzędzie `ipmitool` / Redfish API).
-   - Komunikacja zwrotna z `redwolf-core` via HTTP POST (JSON payload).
+   - Minimal in-memory Linux micro-OS (initramfs based on Alpine Linux or minimal Buildroot/Debian kernel).
+   - Discovery daemon extracting data using `dmidecode`, `lscpu`, `/sys`, `ip`, `ethtool`.
+   - In-band BMC configuration modules (`ipmi_si`, `ipmi_devintf`, `ipmitool`).
+   - Reports telemetry back to `redwolf-core` via HTTP POST (JSON payload).
 
 3. **`redwolf-ui` (Web GUI Dashboard):**
-   - Interaktywny, nowoczesny pulpit nawigacyjny (SPA).
-   - Real-time aktualizacja wykrytych maszyn w szafie.
-   - Kreator instalacji (Wizard): wybór OS (AlmaLinux 8/9/10, Debian 12/13), konfiguracja dysków, hasła root, sieci.
-   - Wizualizacja parametrów CPU, RAM, dysków, kart sieciowych i iDRAC.
+   - Modern, reactive web application (SPA).
+   - Real-time updates for discovered nodes.
+   - Provisioning wizard: OS selection (AlmaLinux 8/9/10, Debian 12/13), storage layout, credentials, network setup.
+   - Visual telemetry: CPU, RAM, storage, network interfaces, and iDRAC status.
 
 4. **`redwolf-profiles` & `templates`:**
-   - Szablony i skrypty kickstart / preseed / cloud-init.
-   - Profile sprzętowe (np. reguły specyficzne dla Dell PowerEdge R640 / iDRAC 9).
+   - Cloud-init, kickstart, and preseed templates.
+   - Hardware profiles (Dell PowerEdge R640 / iDRAC 9 defaults).
 
 ---
 
-## 🛠️ Wytyczne Techniczne dla Asystentów AI
+## 🛠️ Technical Guidelines for AI Assistants
 
-Podczas pisania kodu i modyfikowania projektu trzymaj się następujących reguł:
-
-1. **Obsługa Dell PowerEdge i BMC:**
-   - Węzły bazowe mogą nie mieć skonfigurowanego adresu IP w BMC przy pierwszym uruchomieniu, dlatego konfiguracja loginu, hasła i trybu DHCP w BMC odbywa się z poziomu systemu operacyjnego załadowanego przez PXE za pomocą interfejsu KCS (Keyboard Controller Style) i protokołu IPMI (`ipmitool lan set ...`, `ipmitool user set ...`).
-   - Zachowaj idempotentność skryptów konfiguracyjnych BMC.
-
-2. **Niezawodność PXE & Cloud-Init:**
-   - Każde wdrożenie musi być powtarzalne.
-   - Cloud-init wymaga prawidłowej struktury plików: `user-data`, `meta-data`, `network-config` (wersja 2).
-   - Generowane hasła root muszą być bezpiecznie hashowane (np. SHA-512 crypt `$6$`).
-
-3. **Interfejs Użytkownika:**
-   - Estetyka klasy enterprise: ciemny/jasny motyw, przejrzyste tabele urządzeń, wskaźniki statusu LED/aktywności, responsywność.
-   - Zawsze używaj oficjalnego wektorowego logo RedWolf z katalogu `assets/logo/`.
-
-4. **Czystość kodu:**
-   - Modułowa architektura, jasny podział na backend, discovery agent i frontend.
-   - Kompletna dokumentacja API i procedur uruchomieniowych.
+1. **Strict Language Requirement:**
+   - Every file created or updated must use **English exclusively**.
+2. **Dell PowerEdge & BMC Automation:**
+   - BMC IP addresses might not be preconfigured on newly mounted servers. Use the local KCS interface (`ipmitool lan set ...`, `ipmitool user set ...`) from the live discovery environment.
+   - All BMC configuration scripts must be idempotent.
+3. **PXE & Cloud-Init Reliability:**
+   - Target images must use proper Cloud-Init configuration (`user-data`, `meta-data`, `network-config` version 2).
+   - Passwords must be securely hashed (e.g. SHA-512 crypt `$6$`).
+4. **Visual Assets:**
+   - Always use official vector SVGs from [`assets/logo/`](file:///home/dawid/RedWolf/assets/logo/).
