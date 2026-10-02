@@ -1,0 +1,117 @@
+# ==============================================================================
+# RedWolf Bare-Metal & VM Provisioning Engine
+# Discovery RAMdisk Builder (Alpine Linux 3.20 + Linux LTS Kernel)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Build Static Discovery Go Binary
+# ------------------------------------------------------------------------------
+FROM golang:1.23-alpine AS agent-builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /bin/redwolf-discovery ./cmd/redwolf-discovery
+
+# ------------------------------------------------------------------------------
+# Stage 2: Assemble Alpine RAMdisk Root Filesystem
+# ------------------------------------------------------------------------------
+FROM alpine:3.20 AS ramfs-builder
+
+# Install required system packages, enterprise network/storage drivers & utilities
+RUN apk update && apk add --no-cache \
+    linux-lts \
+    util-linux \
+    ipmitool \
+    gptfdisk \
+    parted \
+    efibootmgr \
+    pciutils \
+    usbutils \
+    dmidecode \
+    ethtool \
+    e2fsprogs \
+    xfsprogs \
+    ca-certificates \
+    curl \
+    zstd \
+    kmod \
+    cpio \
+    gzip \
+    pigz
+
+# Create staging ramdisk hierarchy
+WORKDIR /staging
+RUN mkdir -p \
+    /staging/bin \
+    /staging/sbin \
+    /staging/usr/bin \
+    /staging/usr/sbin \
+    /staging/usr/local/bin \
+    /staging/etc \
+    /staging/proc \
+    /staging/sys \
+    /staging/dev \
+    /staging/tmp \
+    /staging/run \
+    /staging/var/log \
+    /staging/var/run \
+    /staging/lib \
+    /staging/mnt/redwolf-target \
+    /staging/root
+
+# Populate system utilities and musl dynamic libraries
+RUN cp -a /bin/* /staging/bin/ && \
+    cp -a /sbin/* /staging/sbin/ && \
+    cp -a /usr/bin/* /staging/usr/bin/ && \
+    cp -a /usr/sbin/* /staging/usr/sbin/ && \
+    cp -a /lib/* /staging/lib/ && \
+    ( [ -d /lib64 ] && mkdir -p /staging/lib64 && cp -a /lib64/* /staging/lib64/ || true ) && \
+    cp -a /etc/* /staging/etc/ && \
+    mkdir -p /staging/usr/share/udhcpc && \
+    cp -a /usr/share/udhcpc/* /staging/usr/share/udhcpc/
+
+# Copy Linux LTS kernel modules and prune non-server drivers to optimize PXE boot payload
+RUN KVER=$(ls /lib/modules) && \
+    mkdir -p /staging/lib/modules && \
+    cp -a /lib/modules/${KVER} /staging/lib/modules/ && \
+    rm -rf /staging/lib/modules/${KVER}/kernel/sound \
+           /staging/lib/modules/${KVER}/kernel/net/wireless \
+           /staging/lib/modules/${KVER}/kernel/drivers/gpu \
+           /staging/lib/modules/${KVER}/kernel/drivers/media \
+           /staging/lib/modules/${KVER}/kernel/drivers/bluetooth \
+           /staging/lib/modules/${KVER}/kernel/drivers/sound && \
+    depmod -b /staging ${KVER}
+
+# Install static Go discovery binary
+COPY --from=agent-builder /bin/redwolf-discovery /staging/usr/local/bin/redwolf-discovery
+RUN chmod 755 /staging/usr/local/bin/redwolf-discovery
+
+# Install PID 1 /init script
+COPY scripts/init.sh /staging/init
+RUN chmod 755 /staging/init
+
+# Create output artifacts directory
+RUN mkdir -p /output
+
+# Export Linux LTS kernel
+RUN cp /boot/vmlinuz-lts /output/vmlinuz
+
+# Pack cpio gzip initramfs archive with parallel multi-core compression and generate checksums
+RUN cd /staging && \
+    find . | cpio -H newc -o | pigz -p $(nproc) > /output/initramfs.img && \
+    cp /output/initramfs.img /output/initramfs.cpio.gz && \
+    cd /output && \
+    sha256sum vmlinuz initramfs.img > SHA256SUMS
+
+# ------------------------------------------------------------------------------
+# Stage 3: Artifact Distribution Container
+# ------------------------------------------------------------------------------
+FROM alpine:3.20
+COPY --from=ramfs-builder /output /output
+VOLUME ["/output"]
+CMD ["cp", "-a", "/output/.", "/target/"]

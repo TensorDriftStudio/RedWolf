@@ -1,0 +1,32 @@
+# RedWolf Production dnsmasq configuration template
+# Do NOT bind port 53 (DNS) to avoid host systemd-resolved collisions
+port=0
+
+# Bind only to the specified provisioning interface
+# interface=eth0
+bind-dynamic
+
+# Multi-Architecture DHCP Boot Loaders (Option 93 / Client System Architecture)
+dhcp-match=set:bios,option:client-arch,0
+dhcp-match=set:efi64,option:client-arch,7
+dhcp-match=set:efi64,option:client-arch,9
+dhcp-match=set:arm64,option:client-arch,11
+dhcp-match=set:ipxe,77,"iPXE"
+
+# Serve initial iPXE chainloader to PXE ROM clients based on firmware architecture
+dhcp-boot=tag:!ipxe,tag:bios,undionly.kpxe
+dhcp-boot=tag:!ipxe,tag:efi64,ipxe.efi
+dhcp-boot=tag:!ipxe,tag:arm64,ipxe-arm64.efi
+
+# Hand off iPXE clients to RedWolf dynamic boot API with MAC query parameter
+# dhcp-boot=tag:ipxe,http://<REDWOLF_IP>:8080/boot.ipxe?mac=${net0/mac}
+
+# TFTP Server Configuration for initial PXE bootstrap
+enable-tftp
+tftp-root=/var/lib/redwolf/tftp
+tftp-secure
+
+# Logging
+log-facility=/var/log/redwolf/dnsmasq.log
+log-dhcp
+log-async=25

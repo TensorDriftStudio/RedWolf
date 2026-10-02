@@ -1,0 +1,10 @@
+.git
+.github
+.agents
+.gemini
+node_modules
+web/node_modules
+*.log
+.DS_Store
+*.tmp
+data/

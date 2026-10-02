@@ -77,9 +77,11 @@ export interface ServerNode {
   discoveredAt: string;
 }
 
+export type OperatingSystem = 'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13';
+
 export interface DeploymentConfig {
   nodeId: string;
-  os: 'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13';
+  os: OperatingSystem;
   targetDrivePath: string;
   partitioningPreset: 'standard' | 'lvm' | 'raid1';
   rootPassword: string;
@@ -92,4 +94,141 @@ export interface DeploymentConfig {
   vlanTag?: number;
   enableBonding: boolean;
   bondInterfaces?: string[];
+  templateId?: string;
+  customUserData?: string;
 }
+
+export interface CloudInitTemplate {
+  id: string;
+  name: string;
+  description: string;
+  distro: string;
+  userData: string;
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface OSImageDownloadStatus {
+  os: OperatingSystem;
+  filename: string;
+  totalBytes: number;
+  copiedBytes: number;
+  progress: number;
+  status: 'downloading' | 'completed' | 'error';
+  error?: string;
+}
+
+export interface OSImageInfo {
+  filename: string;
+  os: OperatingSystem;
+  displayName: string;
+  sizeBytes: number;
+  present: boolean;
+  downloadUrl?: string;
+  downloadStatus?: OSImageDownloadStatus;
+}
+
+export type PowerState = 'POWERED_ON' | 'POWERED_OFF' | 'UNKNOWN';
+
+export interface PowerStatusResponse {
+  nodeId: string;
+  powerState: PowerState;
+  bmcIp: string;
+}
+
+export type AuthSource = 'LOCAL' | 'LDAP' | 'ACTIVE_DIRECTORY';
+export type UserRole = 'ADMIN' | 'OPERATOR' | 'VIEWER';
+
+export interface User {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  role: UserRole;
+  source: AuthSource;
+  createdAt: string;
+  lastLoginAt: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: User;
+  expiresAt: string;
+}
+
+export interface LDAPConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  useTls: boolean;
+  startTls: boolean;
+  insecureSkipVerify: boolean;
+  bindDn: string;
+  bindPassword?: string;
+  baseDn: string;
+  userFilter: string;
+  groupSearchDn: string;
+  adminGroupDn: string;
+  operatorGroupDn: string;
+}
+
+export interface ActiveDirectoryConfig {
+  enabled: boolean;
+  domain: string;
+  domainController: string;
+  port: number;
+  useLdaps: boolean;
+  insecureSkipVerify: boolean;
+  bindDn: string;
+  bindPassword?: string;
+  baseDn: string;
+  userSearchFilter: string;
+  adminGroup: string;
+  operatorGroup: string;
+}
+
+export interface SystemSettings {
+  general: {
+    applianceName: string;
+    serverUrl: string;
+    provisioningInterface: string;
+    defaultOs: OperatingSystem;
+  };
+  network: {
+    subnetCidr: string;
+    dhcpRangeStart: string;
+    dhcpRangeEnd: string;
+    gateway: string;
+    dnsServers: string[];
+    leaseDurationMinutes: number;
+  };
+  auth: {
+    localAuthEnabled: boolean;
+    ldap: LDAPConfig;
+    activeDirectory: ActiveDirectoryConfig;
+  };
+  storage: {
+    imageStorageDir: string;
+    maxCacheSizeGb: number;
+  };
+  updatedAt: string;
+}
+
+export interface DirectoryTestResult {
+  success: boolean;
+  latencyMs: number;
+  message: string;
+  entriesFound: number;
+  testedAt: string;
+}
+
+export interface VersionInfo {
+  version: string;
+  gitCommit: string;
+  buildDate: string;
+  edition: string;
+  goVersion: string;
+  platform: string;
+}
+

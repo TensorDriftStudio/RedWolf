@@ -15,3 +15,8 @@ dist/
 build/
 iso/
 *.raw
+bin/
+data/
+assets/discovery/*.img
+assets/discovery/*.cpio.gz
+assets/discovery/vmlinuz

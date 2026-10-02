@@ -4,40 +4,45 @@
 
 @layer base {
   body {
-    background-color: #07090e;
-    color: #f1f5f9;
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #0d1015;
+    color: #e6edf3;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   
-  /* Sleek developer scrollbars */
+  /* High-density enterprise scrollbars */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #0d131f;
+    background: #13171f;
   }
   ::-webkit-scrollbar-thumb {
-    background: #1e293b;
-    border-radius: 3px;
+    background: #2a3344;
+    border-radius: 2px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #334155;
+    background: #3b465c;
   }
 }
 
-.glass-panel {
-  background: rgba(13, 19, 31, 0.75);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(30, 41, 59, 0.7);
+/* AWX / Rancher Flat Enterprise Card */
+.enterprise-panel {
+  background-color: #181e28;
+  border: 1px solid #2a3344;
 }
 
-.glass-card {
-  background: rgba(18, 26, 43, 0.6);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+.enterprise-card {
+  background-color: #1d2330;
+  border: 1px solid #2a3344;
 }
 
-.glow-line {
-  background: linear-gradient(90deg, transparent, #A6192E, transparent);
+.enterprise-row {
+  border-bottom: 1px solid #212836;
+}
+
+.enterprise-row:hover {
+  background-color: #232a39;
 }

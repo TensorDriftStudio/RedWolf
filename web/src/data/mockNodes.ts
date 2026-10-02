@@ -282,10 +282,10 @@ export const initialNodes: ServerNode[] = [
       targetDrive: '/dev/sda',
       targetIp: '10.10.100.12',
       logs: [
-        'Zstandard raw image streaming complete (1.8 GB / 32s)',
-        'Formatted partition 3 as NoCloud cidata (FAT32)',
-        'Wrote /cidata/user-data, meta-data, and network-config (Netplan v2)',
-        'efibootmgr: registered boot entry AlmaLinux 9 in NVRAM',
+        'Zstandard sparse raw image streaming complete (1.8 GB / 32s)',
+        'sgdisk -e: Relocated backup GPT header to end of disk',
+        'Mounted rootfs in RAM; injected /var/lib/cloud/seed/nocloud/ (MAC-matched network-config)',
+        'efibootmgr: registered boot entry AlmaLinux 9 in NVRAM with disk boot priority',
         'System rebooted successfully. Cloud-Init finalized root filesystem expansion.'
       ]
     },

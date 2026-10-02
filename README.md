@@ -7,10 +7,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Status-In%20Development-crimson.svg?style=flat-square" alt="Status">
+  <img src="https://img.shields.io/badge/Release-v1.1.0%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/OS%20Targets-AlmaLinux%20%7C%20Debian-orange.svg?style=flat-square" alt="Targets">
+  <img src="https://img.shields.io/badge/Architecture-Go%201.23%20%2B%20React%2019-007acc.svg?style=flat-square" alt="Tech Stack">
 </p>
 
 ---
@@ -52,45 +53,184 @@ sequenceDiagram
     Srv->>RW: 9. Transmits full hardware inventory report via API
     RW->>Admin: 10. Server appears in GUI (Status: "Ready for Provisioning")
     Admin->>RW: 11. Selects OS (AlmaLinux / Debian) + target disk + root pass + network
-    RW->>Srv: 12. Streams raw cloud image & injects NoCloud 'cidata' partition
+    RW->>Srv: 12. Streams raw cloud image & injects NoCloud configuration
     Srv->>Srv: 13. Reboots into production OS with Cloud-Init applied
 ```
 
-### Step-by-Step Breakdown:
+---
 
-1. **Physical Server Mounting:**
-   The technician mounts the server into the rack and connects 3 cables:
-   - **a) Power:** Redundant Power Supplies (PSU1 / PSU2)
-   - **b) BMC Port:** Dedicated Out-of-band (OOB) management RJ-45 port
-   - **c) Provisioning Network:** Primary network interface (NIC 1)
+## 📖 Step-by-Step Operator Guide
 
-2. **Zero-Touch PXE Boot:**
-   The technician powers on the server. The node boots via PXE. RedWolf Core's managed `dnsmasq` serves the iPXE loader and streams the in-memory **RedWolf Discovery Agent** over fast HTTP.
+Follow these steps to deploy the RedWolf appliance and provision bare-metal servers or virtual machines from scratch.
 
-3. **Autonomous Takeover & Vendor HAL Execution:**
-   - The Discovery Agent automatically detects the system manufacturer via DMI.
-   - **Hardware Inventory Discovery:**
-     - CPU topology, cores, threads, and microarchitecture via `lscpu -J`
-     - Platform DMI chassis model and Serial Number / Service Tag
-     - Total RAM capacity and DIMM slot population
-     - MAC addresses, link states, and PCI topology for all network cards
-     - Storage drives enumerated by serial number, bus (NVMe, SAS, SATA, BOSS, SATADOM), and capacity via `lsblk -J`
-   - **Vendor BMC Automation (In-Band via KCS `/dev/ipmi0`):**
-     - Sets vendor-compatible administrator credentials (safe 14–16 character password policy compliant across Dell, Supermicro, and ASRock Rack).
-     - Configures BMC interface mode to Dedicated management port (executing raw OEM commands where required for Supermicro/ASRock).
-     - Enables DHCP on the BMC and queries the acquired BMC IP address.
+### Step 1: Deploy the RedWolf Appliance
 
-4. **Real-time RedWolf GUI Dashboard:**
-   - Full hardware inventory appears instantly in the Web GUI with the status **"Ready for Provisioning"**.
-   - Direct web link to the server's BMC console (`https://<BMC_IP>`).
+Clone the repository and spin up the appliance container using Docker Compose. RedWolf uses `network_mode: host` to observe Layer-2 DHCP discovery broadcasts on the provisioning interface:
 
-5. **Bare-Metal Cloud-Init OS Deployment:**
-   - **Supported Distributions:** AlmaLinux 8, 9, 10; Debian 12 (Bookworm), 13 (Trixie).
-   - **Deployment Pipeline:**
-     - **Deterministic Disk Targeting:** Operator selects the exact target drive by serial number / bus (e.g. `Samsung PM9A3 1.92TB NVMe`).
-     - **Image Streaming:** RedWolf streams compressed official generic cloud images (`.raw.zstd`) directly onto the disk.
-     - **NoCloud Injection:** RedWolf formats a local `cidata` filesystem on the disk containing `user-data`, `meta-data`, and MAC-matched `network-config` (Netplan v2).
-     - **Reboot:** Server reboots directly into production with Cloud-Init executing on bare metal.
+```bash
+# 1. Clone the repository
+git clone https://github.com/TensorDriftStudio/RedWolf.git
+cd RedWolf
+
+# 2. Start the RedWolf Core container
+docker compose up -d
+
+# 3. Check service health and verify logs
+docker compose ps
+curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/api/version
+```
+
+> [!NOTE]
+> For installations where the provisioning network is isolated on a dedicated physical interface (e.g. `eth1`), use the Macvlan compose profile:
+> `docker compose -f docker-compose.macvlan.yml up -d`
+
+---
+
+### Step 2: Access the RedWolf GUI
+
+Open your browser and navigate to:
+```text
+http://<APPLIANCE_IP>:8080
+```
+
+1. **Authentication:** Choose your authentication provider on the login screen:
+   - **Local Admin:** Built-in appliance administrator credentials.
+   - **OpenLDAP / FreeIPA:** Authenticates against corporate RFC 4511 directories.
+   - **Active Directory:** Authenticates against Windows AD DS using LDAPS (port 636).
+2. Click **Sign In to RedWolf GUI** to enter the Fleet Management dashboard.
+
+---
+
+### Step 3: Configure Network & OS Image Catalog
+
+Before booting servers, configure your subnet parameters and download target operating systems:
+
+1. **Open Settings:** Click the **Settings** icon in the top navigation bar.
+2. **PXE Engine & Network:**
+   - Under the **PXE Engine & Network** tab, verify or update the Subnet CIDR (e.g. `192.168.0.0/24`), DHCP Range (`192.168.0.100` - `192.168.0.200`), and Gateway.
+   - Click **Save Configuration**. The internal `dnsmasq` service reloads dynamically without dropping connections.
+3. **Distribution Mirror & OS Images:**
+   - Navigate to the **Distribution Mirror & Cache** tab.
+   - Click **Download Image** next to **AlmaLinux 9** or **Debian 12**.
+   - RedWolf downloads official cloud raw images asynchronously and verifies checksums. Live progress is displayed directly in the GUI.
+   *(Alternatively, run `bash scripts/download-images.sh --os almalinux9` via CLI).*
+
+---
+
+### Step 4: Hardware Racking & Zero-Touch Discovery
+
+1. **Physical Connections:**
+   - Connect **Power** to the server power supplies.
+   - Connect the server's **Dedicated BMC RJ-45 Port** to your management network.
+   - Connect the primary **Provisioning NIC (NIC 1)** to the RedWolf provisioning subnet.
+2. **Power On:** Power on the node. Ensure UEFI/BIOS boot priority has **Network (PXE)** enabled.
+3. **Automated Discovery Process:**
+   - RedWolf DHCP responds with the iPXE bootloader (`ipxe.efi`).
+   - The node boots the Alpine-based `redwolf-discovery` agent entirely in RAM.
+   - The agent reads chassis DMI (Dell Service Tag, Supermicro / ASRock serial), enumerates all CPUs, DIMMs, network cards, and disks (NVMe, SAS, SATA, BOSS, SATADOM).
+   - In-band KCS (`/dev/ipmi0`) configures BMC Dedicated port mode, enables DHCP, and escrows credentials into RedWolf's encrypted AES-256-GCM vault.
+4. **Appears in Fleet Dashboard:**
+   - Within 60–90 seconds, the node transitions to **"Ready for Provisioning"** in the RedWolf GUI.
+
+---
+
+### Step 5: Provision the Operating System
+
+1. In the RedWolf GUI Fleet view, click **Provision OS** on the discovered node.
+2. **Step 1 - Operating System:** Select target OS (e.g., *AlmaLinux 9* or *Debian 12*).
+3. **Step 2 - Target Drive Selection:**
+   - Select the target storage disk from the detected hardware list (e.g. `Dell BOSS RAID1`, `Samsung PM9A3 NVMe`, or SAS drive).
+   - Devices are referenced by immutable identifiers (`/dev/disk/by-id/...`), preventing accidental drive overwrites.
+4. **Step 3 - Cloud-Init & Credentials:**
+   - Specify hostname, admin username, root password, and optional SSH authorized keys.
+   - Select network configuration: **DHCP** or **Static IP** (automatically bound to the detected network card MAC address).
+5. **Step 4 - Deploy:**
+   - Review configuration and click **Start Deployment**.
+   - RedWolf streams the raw compressed image, automatically fixes the secondary GPT boundary (`sgdisk -e`), mounts root in RAM, and injects NoCloud Cloud-Init configuration (`user-data`, `meta-data`, and MAC-matched `network-config`).
+   - The node reboots directly into the production OS.
+
+---
+
+### Step 6: Post-Deployment Management & Lifecycle Actions
+
+From the RedWolf GUI, select any node to open the **Hardware Telemetry & Control Drawer**:
+
+* **BMC Management & Console:**
+  - View the discovered BMC IP address. Click **Open Console** to launch the vendor's web interface (iDRAC / MegaRAC / ASPEED).
+  - Reveal or rotate escrowed BMC passwords on demand.
+  - Execute remote chassis power commands (**Power On**, **Power Off**, **Power Cycle** via IPMI/Redfish).
+* **Reset Node State:**
+  - Click **Reset State** to clear a stuck deployment or re-trigger discovery.
+* **Decommission Node:**
+  - Click **Decommission** to remove obsolete or replaced hardware from inventory.
+
+---
+
+### Step 7: Testing Without Physical Hardware (Node Simulator)
+
+You can simulate bare-metal nodes and test the complete workflow without physical servers:
+
+```bash
+# Simulate a Dell PowerEdge R640 node sending live telemetry
+bash scripts/simulate-node.sh --vendor dell --count 1
+
+# Simulate a Supermicro or ASRock Rack server
+bash scripts/simulate-node.sh --vendor supermicro --count 1
+bash scripts/simulate-node.sh --vendor asrock --count 1
+
+# Launch an actual QEMU VM booting the real discovery kernel & initramfs
+bash scripts/simulate-node.sh --mode qemu --vendor dell
+```
+
+---
+
+## 🐳 Docker Deployment Details
+
+The production appliance container packages all dependencies into a lightweight Alpine image:
+
+```bash
+# Build and run the appliance
+docker compose up -d
+
+# View live container logs
+docker compose logs -f redwolf
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `REDWOLF_HTTP_PORT` | `8080` | Port for Web GUI and REST API |
+| `REDWOLF_PROVISIONING_INTERFACE` | `eth0` | Network interface for DHCP/TFTP broadcasts |
+| `REDWOLF_DB_PATH` | `/var/lib/redwolf/db/redwolf.db` | Path to persistent SQLite WAL database |
+| `REDWOLF_IMAGE_DIR` | `/var/lib/redwolf/images` | Storage cache directory for OS images |
+| `REDWOLF_TFTP_DIR` | `/var/lib/redwolf/tftp` | TFTP root serving iPXE bootloaders |
+
+---
+
+## 🛠️ Tooling & Scripts Reference
+
+### 1. Build Discovery Boot Assets (Kernel & Initramfs)
+To build or update the Alpine Linux in-memory discovery environment:
+```bash
+bash scripts/build-discovery-ramfs.sh
+```
+Outputs `assets/discovery/vmlinuz` and `assets/discovery/initramfs.img` with bundled hardware drivers (`ixgbe`, `i40e`, `bnxt_en`, `tg3`, `mlx5_core`, `megaraid_sas`, `mpt3sas`, `smartpqi`, `nvme`), GNU `util-linux`, `ipmitool`, and the static Go `redwolf-discovery` binary.
+
+### 2. Cloud OS Image Manager
+To inspect, download, or verify OS distributions via CLI:
+```bash
+# Check download cache status
+bash scripts/download-images.sh --check
+
+# Download specific distribution
+bash scripts/download-images.sh --os almalinux9
+bash scripts/download-images.sh --os debian12
+
+# Download all supported distributions
+bash scripts/download-images.sh --all
+```
 
 ---
 
@@ -98,26 +238,34 @@ sequenceDiagram
 
 ```text
 RedWolf/
-├── AGENTS.md                  # Comprehensive AI guidelines & architecture context (English only)
-├── GEMINI.md                  # Symlink to AI guidelines
+├── AGENTS.md                  # Mandatory AI context & engineering guidelines (English only)
 ├── README.md                  # Main project documentation (this file)
-├── .agents/
-│   └── rules/
-│       ├── language-policy.md # Mandatory English-only enforcement rule
-│       └── redwolf-domain.md  # Core domain rules for assistants
+├── CHANGELOG.md               # Keep a Changelog semantic release history
+├── VERSION                    # SemVer release tag (1.1.0)
+├── Dockerfile                 # Multi-stage production container build (Web UI + Go Core + Assets)
+├── docker-compose.yml         # Host-networking appliance deployment
+├── docker-compose.macvlan.yml # Isolated physical interface Macvlan deployment
+├── cmd/
+│   ├── redwolf/               # RedWolf Core server daemon entrypoint
+│   └── redwolf-discovery/     # In-memory bare-metal discovery agent entrypoint
+├── internal/
+│   ├── domain/                # Pure domain models (ServerNode, Hardware, Credentials, FSM)
+│   ├── service/               # Orchestration services (Provisioner, Auth, Settings, BMC Escrow, ImageCatalog)
+│   ├── adapter/               # Infrastructure adapters (HTTP/Chi, SQLite WAL, dnsmasq, LDAP/AD, AES-256)
+│   ├── agent/                 # Discovery agent collectors (CPU, DMI, Memory, Network, Storage, BMC)
+│   └── version/               # Enterprise version and build metadata
+├── scripts/
+│   ├── build-discovery-ramfs.sh # Automated Alpine discovery kernel & ramdisk packager
+│   ├── init.sh                # In-memory discovery system init (PID 1) script
+│   ├── simulate-node.sh       # Multi-vendor hardware simulator & QEMU test rig
+│   ├── download-images.sh     # Cloud raw image mirror and verification utility
+│   └── Dockerfile.discovery   # Clean containerized build environment for PXE boot artifacts
 ├── assets/
+│   ├── discovery/             # Network bootable vmlinuz kernel & initramfs
+│   ├── tftp/                  # Production iPXE bootloaders (ipxe.efi, undionly.kpxe)
 │   └── logo/                  # Vector SVG and high-resolution PNG brand assets
-│       ├── redwolf-horizontal.svg       # Primary horizontal logo (light theme)
-│       ├── redwolf-horizontal-dark.svg  # Horizontal logo for dark GUI
-│       ├── redwolf-icon.svg             # Standalone wolf emblem / icon
-│       ├── redwolf-logo.svg             # Full stacked logo
-│       ├── redwolf-logo-dark.svg        # Full stacked logo dark
-│       ├── favicon.ico / favicon.png    # Browser and application favicons
-│       ├── index.html                   # Interactive brand asset gallery
-│       └── *.png                        # Transparent PNG exports (32px to 1024px)
-├── docs/
-│   ├── ARCHITECTURE.md        # Modular multi-vendor system architecture document
-│   └── SPECIFICATION.md       # Full engineering specification and HAL details
+├── web/                       # React 19 + TypeScript + Vite + TailwindCSS Enterprise Dashboard
+└── docs/                      # Architectural specifications and operational guides
 ```
 
 ---
@@ -133,17 +281,38 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 
 ## 🚀 Roadmap
 
-- [x] Initial architectural design and multi-vendor specifications (Dell, Supermicro, ASRock Rack).
-- [x] Vectorization and standardization of logo assets (SVG, PNG, dark/light themes).
-- [x] Contributor and AI assistant guidelines (`AGENTS.md`, `.agents/rules/`).
-- [ ] Implement RedWolf Core in Go (Chi API, SQLite, managed `dnsmasq` orchestration).
-- [ ] Build multi-vendor `redwolf-discovery` in-memory bootable image (Alpine + enterprise NIC drivers + HAL scripts).
-- [ ] Implement RedWolf Web GUI Dashboard with disk selector and live node states.
-- [ ] Develop bare-metal raw image streaming and NoCloud `cidata` partition injector.
-- [ ] Integration validation on Dell PowerEdge, Supermicro, and ASRock Rack hardware.
+### ✅ Version 1.0.0 — Baseline MVP (Completed)
+- [x] Initial multi-vendor HAL architecture for Dell PowerEdge, Supermicro, and ASRock Rack.
+- [x] In-memory Alpine Linux discovery agent (`redwolf-discovery`) with kernel drivers.
+- [x] iPXE/TFTP bootloader chaining with dynamic `/boot.ipxe` script generation.
+- [x] SQLite WAL database storage engine with concurrency protection.
+- [x] Core React 19 + TypeScript + TailwindCSS operator console.
+- [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
+- [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
+
+### ✅ Version 1.1.0 — Enterprise Release (Current)
+- [x] **Enterprise Semantic Versioning (SemVer):** Added `internal/version`, `GET /api/version` endpoint, Docker `-ldflags` injection, `VERSION`, and `CHANGELOG.md`.
+- [x] **Branding & UI Standardization:** Unified application as **RedWolf GUI** with official vector logo and removed all temporary placeholder icons.
+- [x] **Production Security Hardening:** Eliminated default credential hints and quick-fills from the login interface; added `ipmitool` package to production container.
+- [x] **Dynamic Subnet & DNS Engine:** Integrated dynamic `dhcp-range`, `dhcp-boot`, and DNS option management in `dnsmasq` adapter with live subprocess reload on configuration changes.
+- [x] **Automated OS Image Management:** Background cloud raw image downloader (`internal/service/image_catalog.go`) with live progress tracking in the Settings UI.
+- [x] **Fleet Node Lifecycle Management:** Interactive node state reset (`POST /api/nodes/{id}/reset`) and decommission (`DELETE /api/nodes/{id}`).
+- [x] **Performance Optimization:** Added Docker bind mounts for instantaneous frontend loading without requiring 600MB container rebuilds.
+
+### ⏳ Version 1.2.0 — Hardware Management & Observability (Next)
+- [ ] **Redfish Out-of-Band Firmware Management:** Automated BIOS, iDRAC, and BMC firmware updates via DMTF Redfish API.
+- [ ] **RAID Controller In-Band Configuration:** Automated hardware virtual disk array creation (RAID 0, 1, 5, 10) on Broadcom/LSI MegaRAID, Dell PERC, and Microsemi SmartRAID controllers via `storcli` / `perccli`.
+- [ ] **Hardware Pre-Provisioning Stress Testing:** Automated RAM, CPU, and NVMe SMART endurance burn-in tests (`memtester`, `stress-ng`, `nvme-cli`) before marking nodes "Ready for Provisioning".
+- [ ] **Remote OS Image Storage (S3 / MinIO):** Direct streaming of cloud images from enterprise object storage.
+- [ ] **Role-Based Access Control (RBAC):** Granular permission scopes (Auditor, Operator, Infrastructure Admin) with audit logs.
+
+### 🔮 Version 2.0.0 — Distributed Infrastructure (Long-Term)
+- [ ] **Multi-Rack / Multi-Datacenter Relay Agents:** Lightweight Layer-2 proxy daemons for distributed provisioning across multiple enterprise racks and edge sites.
+- [ ] **Terraform & OpenTofu Provider:** Infrastructure-as-Code provider to define and provision bare-metal nodes natively in Terraform.
+- [ ] **High-Availability (HA) Core Clustering:** Raft-based consensus clustering for RedWolf Core appliances with active-passive DHCP failover.
 
 ---
 
 ## 📄 License
 
-RedWolf is developed as open-source software. License details will be published alongside the initial source release.
+RedWolf is developed as open-source software under the Apache 2.0 / GPLv3 licenses.

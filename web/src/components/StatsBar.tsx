@@ -1,5 +1,5 @@
 import React from 'react';
-import { Server, CheckCircle2, Loader2, Cpu } from 'lucide-react';
+import { Server, CheckCircle2, Loader2, HardDrive } from 'lucide-react';
 import type { ServerNode } from '../types';
 
 interface StatsBarProps {
@@ -13,53 +13,41 @@ export const StatsBar: React.FC<StatsBarProps> = ({ nodes }) => {
   const active = nodes.filter(n => n.status === 'ACTIVE').length;
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:gap-4">
-      {/* Total Nodes */}
-      <div className="flex items-center gap-3.5 rounded-xl border border-surface-border bg-surface-card p-4 shadow-card">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-800/80 text-slate-300 border border-slate-700/50">
-          <Server className="h-5 w-5" />
-        </div>
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Total Servers */}
+      <div className="border-l-2 border-l-slate-400 border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-xs font-medium text-slate-400">Total Nodes</div>
-          <div className="text-xl font-bold tracking-tight text-white">{total}</div>
+          <div className="text-[11px] font-medium text-enterprise-textMuted uppercase tracking-wider">Total Servers</div>
+          <div className="text-xl font-bold font-mono text-white mt-0.5">{total}</div>
         </div>
+        <Server className="h-5 w-5 text-enterprise-textDim" />
       </div>
 
       {/* Ready for Provisioning */}
-      <div className="flex items-center gap-3.5 rounded-xl border border-emerald-950/60 bg-emerald-950/20 p-4 shadow-card relative overflow-hidden">
-        <div className="absolute -right-4 -top-4 h-16 w-16 rounded-full bg-emerald-500/10 blur-xl pointer-events-none" />
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-900/40 text-emerald-400 border border-emerald-700/50">
-          <CheckCircle2 className="h-5 w-5" />
-        </div>
+      <div className="border-l-2 border-l-[#1f6feb] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-xs font-medium text-emerald-400/80 flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            Ready to Deploy
-          </div>
-          <div className="text-xl font-bold tracking-tight text-emerald-300">{ready}</div>
+          <div className="text-[11px] font-medium text-[#79c0ff] uppercase tracking-wider">Ready to Deploy</div>
+          <div className="text-xl font-bold font-mono text-white mt-0.5">{ready}</div>
         </div>
+        <CheckCircle2 className="h-5 w-5 text-[#1f6feb]" />
       </div>
 
       {/* In-Flight Provisioning */}
-      <div className="flex items-center gap-3.5 rounded-xl border border-amber-950/60 bg-amber-950/20 p-4 shadow-card">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-900/40 text-amber-400 border border-amber-700/50">
-          <Loader2 className={`h-5 w-5 ${provisioning > 0 ? 'animate-spin' : ''}`} />
-        </div>
+      <div className="border-l-2 border-l-[#d29922] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-xs font-medium text-amber-400/80">In Progress / Discovering</div>
-          <div className="text-xl font-bold tracking-tight text-amber-300">{provisioning}</div>
+          <div className="text-[11px] font-medium text-[#e3b341] uppercase tracking-wider">Deploying / Discovering</div>
+          <div className="text-xl font-bold font-mono text-white mt-0.5">{provisioning}</div>
         </div>
+        <Loader2 className={`h-5 w-5 text-[#d29922] ${provisioning > 0 ? 'animate-spin' : ''}`} />
       </div>
 
       {/* Active in Production */}
-      <div className="flex items-center gap-3.5 rounded-xl border border-surface-border bg-surface-card p-4 shadow-card">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-redwolf-primary/20 text-redwolf-500 border border-redwolf-primary/40">
-          <Cpu className="h-5 w-5 text-red-400" />
-        </div>
+      <div className="border-l-2 border-l-[#238636] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-xs font-medium text-slate-400">Active Production</div>
-          <div className="text-xl font-bold tracking-tight text-white">{active}</div>
+          <div className="text-[11px] font-medium text-[#7ee787] uppercase tracking-wider">Active in Production</div>
+          <div className="text-xl font-bold font-mono text-white mt-0.5">{active}</div>
         </div>
+        <HardDrive className="h-5 w-5 text-[#238636]" />
       </div>
     </div>
   );

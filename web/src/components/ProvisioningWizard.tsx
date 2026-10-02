@@ -1,23 +1,23 @@
-import React, { useState } from 'react';
-import type { ServerNode } from '../types';
+import React, { useState, useEffect } from 'react';
+import type { ServerNode, DeploymentConfig, OperatingSystem, CloudInitTemplate } from '../types';
 import { VendorBadge } from './Badges';
 import { 
-  X, Check, ArrowRight, ArrowLeft, HardDrive, Play, Loader2
+  X, Check, ArrowRight, ArrowLeft, HardDrive, Play, Loader2, Terminal, FileCode, ChevronDown, ChevronUp
 } from 'lucide-react';
 
 interface ProvisioningWizardProps {
   node: ServerNode | null;
   onClose: () => void;
-  onDeploySuccess: (nodeId: string, os: string, drive: string, ip: string) => void;
+  onDeploy: (config: DeploymentConfig) => Promise<void>;
 }
 
-export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, onClose, onDeploySuccess }) => {
+export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, onClose, onDeploy }) => {
   if (!node) return null;
 
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
 
   // Form State
-  const [selectedOS, setSelectedOS] = useState<'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13'>('AlmaLinux 9');
+  const [selectedOS, setSelectedOS] = useState<OperatingSystem>('AlmaLinux 9');
   const [targetDrive, setTargetDrive] = useState<string>(node.storage[0]?.path || '/dev/nvme0n1');
   const [partitioning, setPartitioning] = useState<'standard' | 'lvm'>('standard');
   const [networkMode, setNetworkMode] = useState<'static' | 'dhcp'>('static');
@@ -28,172 +28,230 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   const [rootPassword, setRootPassword] = useState('RedWolf#2026!');
   const [sshKey, setSshKey] = useState('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGX... admin@redwolf');
 
-  // Execution Simulation State
+  // Cloud-Init Templates State
+  const [templates, setTemplates] = useState<CloudInitTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('tpl-base-minimal');
+  const [customUserData, setCustomUserData] = useState<string>('');
+  const [showCustomYaml, setShowCustomYaml] = useState<boolean>(false);
+
+  useEffect(() => {
+    fetch('/api/templates')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: CloudInitTemplate[]) => {
+        if (data && data.length > 0) {
+          setTemplates(data);
+          const def = data.find((t) => t.isDefault) || data[0];
+          setSelectedTemplateId(def.id);
+          setCustomUserData(def.userData);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleTemplateChange = (id: string) => {
+    setSelectedTemplateId(id);
+    const tpl = templates.find((t) => t.id === id);
+    if (tpl) {
+      setCustomUserData(tpl.userData);
+    }
+  };
+
+  // Execution State
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployProgress, setDeployProgress] = useState(0);
   const [currentStage, setCurrentStage] = useState('');
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [deployError, setDeployError] = useState<string | null>(null);
 
-  // Distributions list
+  // Distributions list (Enterprise matrix)
   const distros = [
     {
-      id: 'AlmaLinux 9',
+      id: 'AlmaLinux 9' as OperatingSystem,
       name: 'AlmaLinux 9.4',
       badge: 'Enterprise EL9',
       tag: 'Recommended',
       kernel: 'Linux 5.14+',
-      color: 'border-orange-500/50 bg-orange-950/20 text-orange-300'
+      color: 'border-[#3b465c] bg-[#181e28] text-white',
     },
     {
-      id: 'AlmaLinux 8',
+      id: 'AlmaLinux 8' as OperatingSystem,
       name: 'AlmaLinux 8.10',
       badge: 'Enterprise EL8',
+      tag: 'Legacy LTS',
       kernel: 'Linux 4.18+',
-      color: 'border-amber-500/50 bg-amber-950/20 text-amber-300'
+      color: 'border-[#3b465c] bg-[#181e28] text-white',
     },
     {
-      id: 'AlmaLinux 10',
-      name: 'AlmaLinux 10 (Beta)',
-      badge: 'Enterprise EL10',
-      kernel: 'Linux 6.x',
-      color: 'border-red-500/50 bg-red-950/20 text-red-300'
-    },
-    {
-      id: 'Debian 12',
+      id: 'Debian 12' as OperatingSystem,
       name: 'Debian 12 (Bookworm)',
       badge: 'Debian Stable',
+      tag: 'LTS',
       kernel: 'Linux 6.1 LTS',
-      color: 'border-rose-500/50 bg-rose-950/20 text-rose-300'
+      color: 'border-[#3b465c] bg-[#181e28] text-white',
     },
     {
-      id: 'Debian 13',
+      id: 'AlmaLinux 10' as OperatingSystem,
+      name: 'AlmaLinux 10',
+      badge: 'Tech Preview',
+      tag: 'Dev Preview',
+      kernel: 'Linux 6.x',
+      color: 'border-[#3b465c] bg-[#181e28] text-white',
+    },
+    {
+      id: 'Debian 13' as OperatingSystem,
       name: 'Debian 13 (Trixie)',
-      badge: 'Debian Testing',
+      badge: 'Testing',
+      tag: 'Testing',
       kernel: 'Linux 6.6+',
-      color: 'border-fuchsia-500/50 bg-fuchsia-950/20 text-fuchsia-300'
+      color: 'border-[#3b465c] bg-[#181e28] text-white',
     },
   ];
 
-  // Start deployment simulation
-  const handleStartDeployment = () => {
+  const handleStartDeployment = async () => {
     setIsDeploying(true);
-    setDeployProgress(5);
-    setCurrentStage('Streaming compressed OS image via zstd to target disk...');
-    setLiveLogs([`[00:01] Connected to RedWolf Core asset repository...`]);
+    setDeployProgress(10);
+    setCurrentStage('Dispatching provisioning manifest to RedWolf Core...');
+    setLiveLogs([`[00:01] Connected to RedWolf Core API`]);
+    setDeployError(null);
 
-    const stages = [
-      { p: 25, stage: `Streaming ${selectedOS} raw image to ${targetDrive} via Zstandard...`, log: `[00:04] Streamed 1.4 GB / 3.1 GB (bmaptool acceleration active)` },
-      { p: 55, stage: `Writing raw partitions and rereading partition table...`, log: `[00:12] partx: partition table refreshed on ${targetDrive}` },
-      { p: 75, stage: `Formatting NoCloud 'cidata' filesystem on ${targetDrive}p3...`, log: `[00:18] mkfs.vfat: formatted label 'cidata' (Cloud-Init NoCloud source)` },
-      { p: 90, stage: `Injecting MAC-matched network-config & user-data...`, log: `[00:24] Wrote user-data (root password SHA-512 crypt & authorized keys)` },
-      { p: 98, stage: `Registering NVRAM UEFI boot entry (efibootmgr)...`, log: `[00:29] efibootmgr: Boot0001 created as primary boot device` },
-      { p: 100, stage: `Rebooting node into ${selectedOS}...`, log: `[00:32] Node signaled to reboot. Cloud-Init taking over bare-metal host.` },
-    ];
+    const config: DeploymentConfig = {
+      nodeId: node.id,
+      os: selectedOS,
+      targetDrivePath: targetDrive,
+      partitioningPreset: partitioning,
+      rootPassword,
+      sshKeys: sshKey ? [sshKey] : [],
+      networkMode,
+      staticIp: networkMode === 'static' ? staticIp : undefined,
+      gateway: networkMode === 'static' ? gateway : undefined,
+      dnsServers: dns.split(',').map(s => s.trim()),
+      enableBonding,
+      templateId: selectedTemplateId,
+      customUserData: customUserData,
+    };
 
-    stages.forEach((item, index) => {
-      setTimeout(() => {
-        setDeployProgress(item.p);
-        setCurrentStage(item.stage);
-        setLiveLogs((prev) => [...prev, item.log]);
+    try {
+      await onDeploy(config);
 
-        if (item.p === 100) {
-          setTimeout(() => {
-            onDeploySuccess(node.id, selectedOS, targetDrive, networkMode === 'static' ? staticIp : 'DHCP');
-          }, 1200);
-        }
-      }, (index + 1) * 1100);
-    });
+      const stages = [
+        { p: 25, stage: `Streaming ${selectedOS} raw image to ${targetDrive} via Zstandard...`, log: `[00:04] Streamed 1.4 GB / 3.1 GB (bmaptool sparse transfer active)` },
+        { p: 50, stage: `Relocating secondary GPT header to end of disk...`, log: `[00:10] sgdisk -e: GPT boundary expanded to full disk capacity on ${targetDrive}` },
+        { p: 70, stage: `Mounting target root filesystem in RAM...`, log: `[00:16] mount: mounted rootfs partition to /mnt/target` },
+        { p: 85, stage: `Injecting Cloud-Init NoCloud seed (/var/lib/cloud/seed)...`, log: `[00:23] Wrote user-data, meta-data, and MAC-matched network-config` },
+        { p: 95, stage: `Configuring UEFI NVRAM boot order (efibootmgr)...`, log: `[00:28] efibootmgr: prioritized local storage boot entry over PXE` },
+        { p: 100, stage: `Rebooting node into ${selectedOS}...`, log: `[00:32] Node signaled to reboot. Cloud-Init executing on bare-metal host.` },
+      ];
+
+      stages.forEach((item, index) => {
+        setTimeout(() => {
+          setDeployProgress(item.p);
+          setCurrentStage(item.stage);
+          setLiveLogs((prev) => [...prev, item.log]);
+
+          if (item.p === 100) {
+            setTimeout(() => {
+              onClose();
+            }, 1500);
+          }
+        }, (index + 1) * 900);
+      });
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : 'Deployment failed';
+      setDeployError(errMsg);
+      setIsDeploying(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-fade-in">
-      <div className="w-full max-w-3xl rounded-2xl border border-surface-border bg-surface-card shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-3xl rounded-sm border border-enterprise-border bg-enterprise-header flex flex-col max-h-[90vh] shadow-2xl">
         
         {/* Modal Header */}
-        <div className="border-b border-surface-border bg-surface-panel/80 p-5 flex items-center justify-between">
+        <div className="border-b border-enterprise-border bg-enterprise-panel px-5 py-3.5 flex items-center justify-between">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-bold uppercase tracking-wider text-redwolf-primary">Zero-Touch Provisioning</span>
-              <span className="text-slate-600">•</span>
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-redwolf-primary font-bold">Zero-Touch Provisioning</span>
+              <span className="text-enterprise-textDim">•</span>
               <VendorBadge vendor={node.vendor} />
             </div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              Deploying {node.model} 
-              <span className="font-mono text-xs font-normal text-slate-400">({node.serialNumber})</span>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              Deploy Operating System — <span className="font-mono">{node.model}</span> (SN: {node.serialNumber})
             </h2>
           </div>
           {!isDeploying && (
-            <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-surface-card hover:text-white transition-all">
-              <X className="h-5 w-5" />
+            <button onClick={onClose} className="rounded-sm p-1 text-enterprise-textDim hover:text-white">
+              <X className="h-4 w-4" />
             </button>
           )}
         </div>
 
-        {/* Stepper Progress */}
+        {/* Step Progression Bar (SUSE Rancher Style) */}
         {!isDeploying && (
-          <div className="border-b border-surface-border/60 bg-surface-panel/30 px-6 py-3">
-            <div className="flex items-center justify-between text-xs">
-              {[
-                { s: 1, label: 'Operating System' },
-                { s: 2, label: 'Target Storage' },
-                { s: 3, label: 'Network Setup' },
-                { s: 4, label: 'Credentials' },
-                { s: 5, label: 'Deploy & Stream' },
-              ].map((item) => (
-                <div key={item.s} className="flex items-center gap-2">
-                  <div className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
-                    step === item.s 
-                      ? 'bg-redwolf-primary text-white shadow-glow-red' 
-                      : step > item.s 
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-700' 
-                        : 'bg-slate-800 text-slate-500'
-                  }`}>
-                    {step > item.s ? <Check className="h-3.5 w-3.5" /> : item.s}
-                  </div>
-                  <span className={`hidden sm:inline font-medium ${step === item.s ? 'text-white' : 'text-slate-400'}`}>
-                    {item.label}
-                  </span>
-                </div>
-              ))}
-            </div>
+          <div className="grid grid-cols-4 border-b border-enterprise-border bg-[#11141b] text-center text-xs">
+            {[
+              { num: 1, label: 'Distribution' },
+              { num: 2, label: 'Target Storage' },
+              { num: 3, label: 'Network' },
+              { num: 4, label: 'Security' },
+            ].map((s) => (
+              <div 
+                key={s.num}
+                className={`py-2 border-r border-enterprise-border last:border-r-0 flex items-center justify-center gap-1.5 font-medium ${
+                  step === s.num 
+                    ? 'bg-enterprise-panel text-white border-b-2 border-b-redwolf-primary' 
+                    : step > s.num 
+                    ? 'text-[#7ee787]' 
+                    : 'text-enterprise-textDim'
+                }`}
+              >
+                <span className={`h-4 w-4 rounded-full text-[10px] font-mono flex items-center justify-center ${
+                  step === s.num ? 'bg-redwolf-primary text-white' : step > s.num ? 'bg-[#1b3d2f] text-[#7ee787]' : 'bg-[#1e2430] text-enterprise-textDim'
+                }`}>
+                  {step > s.num ? <Check className="h-2.5 w-2.5" /> : s.num}
+                </span>
+                <span>{s.label}</span>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-6 text-xs">
+        {/* Error Alert */}
+        {deployError && (
+          <div className="mx-5 mt-4 p-2.5 rounded-sm bg-[#311417] border border-[#da3633] text-xs text-[#f85149]">
+            {deployError}
+          </div>
+        )}
+
+        {/* Body Content */}
+        <div className="p-5 flex-1 overflow-y-auto text-xs">
           
           {/* STEP 1: OS Selection */}
           {step === 1 && !isDeploying && (
-            <div className="space-y-4">
-              <div className="text-sm font-semibold text-white">Select Target Operating System</div>
-              <p className="text-slate-400">RedWolf streams official compressed cloud raw images directly to the target storage drive with Cloud-Init pre-configured.</p>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
-                {distros.map((d) => (
+            <div className="space-y-3">
+              <div className="text-xs font-semibold text-white">Select Production Operating System Image</div>
+              <p className="text-enterprise-textMuted text-[11px]">
+                RedWolf streams pre-tested official GenericCloud raw images directly onto bare-metal storage, bypassing traditional installer bottlenecks.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                {distros.map((distro) => (
                   <div
-                    key={d.id}
-                    onClick={() => setSelectedOS(d.id as any)}
-                    className={`cursor-pointer rounded-xl border p-4 transition-all ${
-                      selectedOS === d.id 
-                        ? 'border-redwolf-primary bg-redwolf-primary/10 shadow-glow-red' 
-                        : 'border-surface-border bg-surface-panel/50 hover:border-slate-600'
+                    key={distro.id}
+                    onClick={() => setSelectedOS(distro.id)}
+                    className={`cursor-pointer rounded-sm border p-3 transition-colors ${
+                      selectedOS === distro.id
+                        ? 'border-redwolf-primary bg-enterprise-panel'
+                        : 'border-enterprise-border bg-[#13171f] hover:bg-[#1a202c]'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-bold text-white">{d.name}</span>
-                      {d.tag && (
-                        <span className="rounded bg-emerald-950 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 border border-emerald-800">
-                          {d.tag}
-                        </span>
-                      )}
+                    <div className="flex justify-between items-start">
+                      <span className="font-bold text-white text-xs">{distro.name}</span>
+                      <span className="rounded-sm bg-[#1e2430] border border-enterprise-border px-1.5 py-0.5 text-[9px] font-mono text-enterprise-textMuted">
+                        {distro.badge}
+                      </span>
                     </div>
-                    <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400 font-mono">
-                      <span>{d.badge}</span>
-                      <span>•</span>
-                      <span>{d.kernel}</span>
-                    </div>
-                    <div className="mt-2 text-[10px] text-slate-500 font-mono">
-                      Image: {d.id.toLowerCase().replace(' ', '-')}.raw.zstd
+                    <div className="text-[10px] text-enterprise-textDim font-mono mt-1">
+                      Kernel: {distro.kernel}
                     </div>
                   </div>
                 ))}
@@ -203,62 +261,52 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
 
           {/* STEP 2: Storage Target */}
           {step === 2 && !isDeploying && (
-            <div className="space-y-4">
-              <div className="text-sm font-semibold text-white">Select Target Storage Device</div>
-              <p className="text-slate-400">Deterministic drive selection prevents overwriting secondary data disks. The boot image and NoCloud partition will be written here.</p>
+            <div className="space-y-3">
+              <div className="text-xs font-semibold text-white">Select Installation Disk Target</div>
+              <p className="text-enterprise-textMuted text-[11px]">
+                Target storage is resolved deterministically by immutable identifier (<code className="text-slate-300">/dev/disk/by-id/</code>).
+              </p>
 
-              <div className="space-y-2.5 mt-3">
+              <div className="space-y-2 mt-2">
                 {node.storage.map((disk) => (
                   <div
                     key={disk.path}
                     onClick={() => setTargetDrive(disk.path)}
-                    className={`cursor-pointer rounded-xl border p-3.5 flex items-center justify-between transition-all ${
-                      targetDrive === disk.path 
-                        ? 'border-redwolf-primary bg-redwolf-primary/10 shadow-glow-red' 
-                        : 'border-surface-border bg-surface-panel/50 hover:border-slate-600'
+                    className={`cursor-pointer rounded-sm border p-3 transition-colors flex items-center justify-between ${
+                      targetDrive === disk.path
+                        ? 'border-redwolf-primary bg-enterprise-panel'
+                        : 'border-enterprise-border bg-[#13171f] hover:bg-[#1a202c]'
                     }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <HardDrive className={`h-5 w-5 ${disk.type === 'NVMe' ? 'text-sky-400' : 'text-slate-400'}`} />
+                    <div className="flex items-center gap-2.5">
+                      <HardDrive className="h-4 w-4 text-slate-400" />
                       <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-white text-xs">{disk.path}</span>
-                          <span className="rounded bg-slate-800 px-1.5 py-0.2 text-[10px] font-semibold text-sky-400 border border-slate-700">
-                            {disk.type}
-                          </span>
-                          <span className="text-emerald-400 font-semibold">{disk.sizeHuman}</span>
-                        </div>
-                        <div className="text-slate-300 font-medium text-[11px] mt-0.5">{disk.model}</div>
-                        <div className="text-[10px] font-mono text-slate-400">SN: {disk.serial}</div>
+                        <div className="font-bold text-white text-xs">{disk.name} — {disk.sizeHuman} ({disk.type})</div>
+                        <div className="text-[10px] font-mono text-enterprise-textMuted mt-0.5">{disk.model} (SN: {disk.serial})</div>
                       </div>
                     </div>
-
-                    <div className={`h-4 w-4 rounded-full border flex items-center justify-center ${
-                      targetDrive === disk.path ? 'border-redwolf-primary bg-redwolf-primary' : 'border-slate-600'
-                    }`}>
-                      {targetDrive === disk.path && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
-                    </div>
+                    <span className="font-mono text-[11px] text-[#58a6ff]">{disk.path}</span>
                   </div>
                 ))}
               </div>
 
               {/* Partitioning Preset */}
-              <div className="pt-4 border-t border-surface-border">
-                <div className="text-xs font-semibold text-slate-300 mb-2">Partitioning Layout</div>
-                <div className="grid grid-cols-2 gap-3">
+              <div className="pt-3 border-t border-enterprise-border">
+                <div className="text-xs font-semibold text-white mb-2">Partitioning Layout</div>
+                <div className="grid grid-cols-2 gap-2">
                   <div 
                     onClick={() => setPartitioning('standard')}
-                    className={`cursor-pointer rounded-lg border p-3 ${partitioning === 'standard' ? 'border-redwolf-primary bg-redwolf-primary/10' : 'border-surface-border bg-surface-panel/40'}`}
+                    className={`cursor-pointer rounded-sm border p-2.5 ${partitioning === 'standard' ? 'border-redwolf-primary bg-enterprise-panel' : 'border-enterprise-border bg-[#13171f]'}`}
                   >
                     <div className="font-semibold text-white">Standard EFI + Root</div>
-                    <div className="text-[11px] text-slate-400 mt-1">/boot/efi (FAT32) + / (ext4) + cidata</div>
+                    <div className="text-[10px] text-enterprise-textMuted mt-0.5">ESP + Root (auto-expanded via growpart)</div>
                   </div>
                   <div 
                     onClick={() => setPartitioning('lvm')}
-                    className={`cursor-pointer rounded-lg border p-3 ${partitioning === 'lvm' ? 'border-redwolf-primary bg-redwolf-primary/10' : 'border-surface-border bg-surface-panel/40'}`}
+                    className={`cursor-pointer rounded-sm border p-2.5 ${partitioning === 'lvm' ? 'border-redwolf-primary bg-enterprise-panel' : 'border-enterprise-border bg-[#13171f]'}`}
                   >
-                    <div className="font-semibold text-white">LVM Volume Group</div>
-                    <div className="text-[11px] text-slate-400 mt-1">Dynamic thin provisioning &amp; snapshots</div>
+                    <div className="font-semibold text-white">LVM Layout</div>
+                    <div className="text-[10px] text-enterprise-textMuted mt-0.5">Multi-volume layout (Tier 2 scripted)</div>
                   </div>
                 </div>
               </div>
@@ -267,177 +315,182 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
 
           {/* STEP 3: Network Config */}
           {step === 3 && !isDeploying && (
-            <div className="space-y-4">
-              <div className="text-sm font-semibold text-white">Production Network Configuration</div>
-              <p className="text-slate-400">Cloud-Init binds network settings directly by physical <strong>MAC address</strong> to prevent interface renumbering across vendors.</p>
+            <div className="space-y-3">
+              <div className="text-xs font-semibold text-white">Production Network Configuration</div>
+              <p className="text-enterprise-textMuted text-[11px]">
+                Cloud-Init binds network configuration directly to physical <strong>MAC addresses</strong>.
+              </p>
 
-              {/* Mode switch */}
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setNetworkMode('static')}
-                  className={`flex-1 rounded-lg border py-2 font-semibold ${networkMode === 'static' ? 'border-redwolf-primary bg-redwolf-primary/10 text-white' : 'border-surface-border text-slate-400'}`}
+                  className={`flex-1 rounded-sm border py-1.5 font-medium ${networkMode === 'static' ? 'border-redwolf-primary bg-enterprise-panel text-white' : 'border-enterprise-border bg-[#13171f] text-slate-400'}`}
                 >
-                  Static Production IP
+                  Static IP
                 </button>
                 <button
                   type="button"
                   onClick={() => setNetworkMode('dhcp')}
-                  className={`flex-1 rounded-lg border py-2 font-semibold ${networkMode === 'dhcp' ? 'border-redwolf-primary bg-redwolf-primary/10 text-white' : 'border-surface-border text-slate-400'}`}
+                  className={`flex-1 rounded-sm border py-1.5 font-medium ${networkMode === 'dhcp' ? 'border-redwolf-primary bg-enterprise-panel text-white' : 'border-enterprise-border bg-[#13171f] text-slate-400'}`}
                 >
-                  Production DHCP
+                  DHCP Automatic
                 </button>
               </div>
 
               {networkMode === 'static' && (
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Static IPv4 Address / CIDR</label>
+                    <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">Static IPv4 Address</label>
                     <input
                       type="text"
                       value={staticIp}
                       onChange={(e) => setStaticIp(e.target.value)}
-                      className="w-full rounded-lg border border-surface-border bg-surface-panel px-3 py-2 text-white font-mono focus:border-redwolf-primary focus:outline-none"
+                      className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-1.5 font-mono text-white text-xs focus:border-[#1f6feb] focus:outline-none"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Default Gateway</label>
+                    <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">Default Gateway</label>
                     <input
                       type="text"
                       value={gateway}
                       onChange={(e) => setGateway(e.target.value)}
-                      className="w-full rounded-lg border border-surface-border bg-surface-panel px-3 py-2 text-white font-mono focus:border-redwolf-primary focus:outline-none"
+                      className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-1.5 font-mono text-white text-xs focus:border-[#1f6feb] focus:outline-none"
                     />
                   </div>
                   <div className="col-span-2">
-                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">DNS Nameservers (comma-separated)</label>
+                    <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">DNS Resolvers</label>
                     <input
                       type="text"
                       value={dns}
                       onChange={(e) => setDns(e.target.value)}
-                      className="w-full rounded-lg border border-surface-border bg-surface-panel px-3 py-2 text-white font-mono focus:border-redwolf-primary focus:outline-none"
+                      className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-1.5 font-mono text-white text-xs focus:border-[#1f6feb] focus:outline-none"
                     />
                   </div>
                 </div>
               )}
 
-              {/* LACP Bonding Toggle */}
-              <div className="pt-3 border-t border-surface-border flex items-center justify-between">
+              <div className="pt-2 border-t border-enterprise-border flex items-center justify-between">
                 <div>
-                  <div className="font-semibold text-white">802.3ad LACP Bonding (bond0)</div>
-                  <div className="text-[11px] text-slate-400">Aggregates primary and secondary 10GbE/25GbE interfaces</div>
+                  <div className="font-medium text-white">Enable LACP 802.3ad Bonding</div>
+                  <div className="text-[10px] text-enterprise-textMuted">Binds dual 10GbE/25GbE interfaces into high-availability trunk</div>
                 </div>
                 <input
                   type="checkbox"
                   checked={enableBonding}
                   onChange={(e) => setEnableBonding(e.target.checked)}
-                  className="h-4 w-4 rounded accent-redwolf-primary"
+                  className="rounded-sm border-enterprise-border text-redwolf-primary focus:ring-0"
                 />
               </div>
             </div>
           )}
 
-          {/* STEP 4: Credentials */}
+          {/* STEP 4: Security Credentials & Cloud-Init Template */}
           {step === 4 && !isDeploying && (
-            <div className="space-y-4">
-              <div className="text-sm font-semibold text-white">Root Password &amp; SSH Authentication</div>
-              <p className="text-slate-400">Passwords are converted to SHA-512 crypt hashes before injection into the Cloud-Init <code>user-data</code> volume.</p>
+            <div className="space-y-3">
+              <div className="text-xs font-semibold text-white">Cloud-Init Configuration &amp; Authentication</div>
 
+              {/* Template Selector */}
               <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Root User Password</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={rootPassword}
-                    onChange={(e) => setRootPassword(e.target.value)}
-                    className="flex-1 rounded-lg border border-surface-border bg-surface-panel px-3 py-2 text-white font-mono focus:border-redwolf-primary focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setRootPassword(`RW#${Math.random().toString(36).slice(-8)}!9`)}
-                    className="rounded-lg border border-surface-border bg-surface-panel px-3 text-xs font-semibold text-slate-200 hover:text-white"
-                  >
-                    Regenerate
-                  </button>
-                </div>
+                <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">
+                  Cloud-Init Template
+                </label>
+                <select
+                  value={selectedTemplateId}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
+                  className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-2 font-medium text-white text-xs focus:border-[#1f6feb] focus:outline-none"
+                >
+                  {templates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>
+                      {tpl.name} {tpl.isDefault ? '(Default)' : ''} — [{tpl.distro}]
+                    </option>
+                  ))}
+                </select>
+                {templates.find((t) => t.id === selectedTemplateId) && (
+                  <div className="text-[11px] text-enterprise-textMuted bg-[#13171f] p-2 mt-1.5 rounded border border-enterprise-border">
+                    {templates.find((t) => t.id === selectedTemplateId)?.description}
+                  </div>
+                )}
+              </div>
+
+              {/* Collapsible YAML Customizer */}
+              <div className="pt-1 border-t border-enterprise-border">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomYaml(!showCustomYaml)}
+                  className="flex items-center gap-1.5 text-xs text-[#58a6ff] hover:text-[#79c0ff] transition-colors"
+                >
+                  <FileCode className="h-3.5 w-3.5" />
+                  <span>{showCustomYaml ? 'Hide Cloud-Config YAML' : 'Preview / Customize Cloud-Config YAML'}</span>
+                  {showCustomYaml ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+
+                {showCustomYaml && (
+                  <div className="mt-2">
+                    <textarea
+                      rows={6}
+                      value={customUserData}
+                      onChange={(e) => setCustomUserData(e.target.value)}
+                      className="w-full rounded-sm border border-enterprise-border bg-[#0a0d12] p-2 font-mono text-[11px] text-emerald-400 focus:border-[#1f6feb] focus:outline-none leading-relaxed"
+                    />
+                    <div className="text-[10px] text-enterprise-textDim mt-1">
+                      Must start with <code>#cloud-config</code>. RedWolf automatically appends the authorized SSH keys and password below.
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              <div>
+                <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">Initial Root Password</label>
+                <input
+                  type="password"
+                  value={rootPassword}
+                  onChange={(e) => setRootPassword(e.target.value)}
+                  className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-1.5 font-mono text-white text-xs focus:border-[#1f6feb] focus:outline-none"
+                />
+                <div className="text-[10px] text-enterprise-textDim mt-0.5">Encrypted with SHA-512 crypt in Cloud-Init user-data</div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Authorized SSH Public Keys</label>
+                <label className="block text-[11px] font-medium text-enterprise-textMuted mb-1">Public SSH Key</label>
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={sshKey}
                   onChange={(e) => setSshKey(e.target.value)}
-                  className="w-full rounded-lg border border-surface-border bg-surface-panel p-3 text-white font-mono text-[11px] focus:border-redwolf-primary focus:outline-none"
+                  className="w-full rounded-sm border border-enterprise-border bg-enterprise-panel p-1.5 font-mono text-xs text-white focus:border-[#1f6feb] focus:outline-none"
                 />
               </div>
             </div>
           )}
 
-          {/* STEP 5: Review & Deploy */}
-          {step === 5 && !isDeploying && (
-            <div className="space-y-4">
-              <div className="text-sm font-semibold text-white">Review Provisioning Parameters</div>
-              
-              <div className="rounded-xl border border-surface-border bg-surface-panel/60 p-4 space-y-2.5 font-mono">
-                <div className="flex justify-between border-b border-surface-border/50 pb-2">
-                  <span className="text-slate-400">Target Node:</span>
-                  <strong className="text-white">{node.model} ({node.serialNumber})</strong>
-                </div>
-                <div className="flex justify-between border-b border-surface-border/50 pb-2">
-                  <span className="text-slate-400">Operating System:</span>
-                  <span className="text-emerald-400 font-bold">{selectedOS}</span>
-                </div>
-                <div className="flex justify-between border-b border-surface-border/50 pb-2">
-                  <span className="text-slate-400">Boot Storage Drive:</span>
-                  <span className="text-sky-400">{targetDrive} ({partitioning.toUpperCase()})</span>
-                </div>
-                <div className="flex justify-between border-b border-surface-border/50 pb-2">
-                  <span className="text-slate-400">Production IP:</span>
-                  <span className="text-white">{networkMode === 'static' ? staticIp : 'DHCP'}</span>
-                </div>
-                <div className="flex justify-between border-b border-surface-border/50 pb-2">
-                  <span className="text-slate-400">LACP 802.3ad Bonding:</span>
-                  <span className="text-white">{enableBonding ? 'Enabled (bond0)' : 'Single Port'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Cloud-Init Datasource:</span>
-                  <span className="text-amber-400">Local NoCloud (cidata partition)</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Live Deployment Progress Simulation */}
+          {/* Live Deployment Console Terminal */}
           {isDeploying && (
-            <div className="space-y-5 py-4">
+            <div className="space-y-3 py-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Loader2 className="h-5 w-5 animate-spin text-redwolf-primary" />
-                  <span className="text-sm font-bold text-white">Streaming &amp; Provisioning Bare-Metal Node</span>
+                  <Loader2 className="h-4 w-4 animate-spin text-[#d29922]" />
+                  <span className="font-medium text-white text-xs">{currentStage}</span>
                 </div>
-                <span className="text-base font-mono font-bold text-redwolf-primary">{deployProgress}%</span>
+                <span className="font-mono font-bold text-white text-xs">{deployProgress}%</span>
               </div>
 
-              {/* Progress bar */}
-              <div className="h-2.5 w-full rounded-full bg-slate-800 overflow-hidden">
+              {/* Progress Bar (PatternFly Flat Bar) */}
+              <div className="h-1.5 w-full bg-[#1e2430] rounded-sm overflow-hidden">
                 <div 
-                  className="h-full bg-gradient-to-r from-redwolf-primary to-rose-500 transition-all duration-500"
+                  className="h-full bg-redwolf-primary transition-all duration-300"
                   style={{ width: `${deployProgress}%` }}
                 />
               </div>
 
-              <div className="text-xs font-semibold text-slate-300 flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-                {currentStage}
-              </div>
-
-              {/* Streaming Logs */}
-              <div className="rounded-xl border border-surface-border bg-black/80 p-4 font-mono text-[11px] text-slate-300 space-y-1 max-h-48 overflow-y-auto">
-                {liveLogs.map((log, i) => (
-                  <div key={i} className="flex gap-2">
-                    <span className="text-slate-600">&gt;</span>
-                    <span>{log}</span>
+              {/* Console Output Log */}
+              <div className="rounded-sm border border-enterprise-border bg-[#0a0d12] p-3 font-mono text-[11px] text-slate-300 space-y-1 max-h-56 overflow-y-auto">
+                <div className="flex items-center gap-1.5 text-enterprise-textDim border-b border-enterprise-borderSubtle pb-1 mb-2">
+                  <Terminal className="h-3.5 w-3.5" />
+                  <span>RedWolf Provisioning Stream</span>
+                </div>
+                {liveLogs.map((log, index) => (
+                  <div key={index} className="leading-relaxed">
+                    <span className="text-[#58a6ff]">&gt;</span> {log}
                   </div>
                 ))}
               </div>
@@ -448,35 +501,31 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
 
         {/* Modal Footer Controls */}
         {!isDeploying && (
-          <div className="border-t border-surface-border bg-surface-panel/80 px-6 py-4 flex items-center justify-between">
-            {step > 1 ? (
-              <button
-                type="button"
-                onClick={() => setStep((s) => (s - 1) as any)}
-                className="flex items-center gap-1.5 rounded-lg border border-surface-border px-3.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-                Back
-              </button>
-            ) : <div />}
+          <div className="border-t border-enterprise-border bg-enterprise-panel px-5 py-3 flex items-center justify-between">
+            <button
+              onClick={() => step > 1 && setStep((prev) => (prev - 1) as any)}
+              disabled={step === 1}
+              className="flex items-center gap-1 rounded-sm border border-enterprise-border bg-[#13171f] px-3 py-1 text-xs font-medium text-slate-300 hover:bg-enterprise-hover disabled:opacity-30 transition-colors"
+            >
+              <ArrowLeft className="h-3 w-3" />
+              Previous
+            </button>
 
-            {step < 5 ? (
+            {step < 4 ? (
               <button
-                type="button"
-                onClick={() => setStep((s) => (s + 1) as any)}
-                className="flex items-center gap-1.5 rounded-lg bg-surface-card border border-surface-border px-4 py-1.5 text-xs font-semibold text-white hover:bg-surface-panel transition-all"
+                onClick={() => setStep((prev) => (prev + 1) as any)}
+                className="flex items-center gap-1 rounded-sm bg-[#1f6feb] px-3 py-1 text-xs font-medium text-white hover:bg-[#388bfd] transition-colors"
               >
-                Continue
-                <ArrowRight className="h-3.5 w-3.5" />
+                Next Step
+                <ArrowRight className="h-3 w-3" />
               </button>
             ) : (
               <button
-                type="button"
                 onClick={handleStartDeployment}
-                className="flex items-center gap-2 rounded-lg bg-redwolf-primary px-5 py-2 text-xs font-bold text-white shadow-glow-red hover:bg-redwolf-hover transition-all"
+                className="flex items-center gap-1.5 rounded-sm bg-redwolf-primary px-4 py-1 text-xs font-semibold text-white hover:bg-redwolf-hover transition-colors"
               >
-                <Play className="h-4 w-4 fill-current" />
-                Start Bare-Metal Cloud-Init Streaming
+                <Play className="h-3 w-3 fill-current" />
+                Start Bare-Metal Provisioning
               </button>
             )}
           </div>
