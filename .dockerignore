@@ -4,6 +4,8 @@
 .gemini
 node_modules
 web/node_modules
+web/dist
+web/dist-ssr
 *.log
 .DS_Store
 *.tmp

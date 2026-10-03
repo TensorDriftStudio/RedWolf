@@ -21,7 +21,6 @@ services:
       - ./data/db:/var/lib/redwolf/db
       - ./data/images:/var/lib/redwolf/images
       - ./data/tftp:/var/lib/redwolf/tftp
-      - ./web/dist:/usr/share/redwolf/web:ro
       - ./assets:/usr/share/redwolf/assets:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro

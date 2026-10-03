@@ -1,9 +1,16 @@
 # ==============================================================================
-# Stage 1: Production Web Dashboard Assets (Pre-compiled with Vite)
+# Stage 1: Production Web Dashboard Assets (Compiled with Vite inside Docker)
 # ==============================================================================
-FROM alpine:3.20 AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /app
-COPY web/dist /app/dist
+
+# Copy dependency specifications first to leverage Docker layer caching
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+# Copy frontend source files and compile production bundle
+COPY web/ ./
+RUN npm run build
 
 # ==============================================================================
 # Stage 2: Build Backend Engine (Go 1.23+)

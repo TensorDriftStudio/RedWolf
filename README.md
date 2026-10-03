@@ -84,6 +84,9 @@ curl -s http://localhost:8080/api/version
 > [!NOTE]
 > For installations where the provisioning network is isolated on a dedicated physical interface (e.g. `eth1`), use the Macvlan compose profile:
 > `docker compose -f docker-compose.macvlan.yml up -d`
+> 
+> For active frontend UI development with instant Hot Module Replacement (HMR) inside Docker:
+> `docker compose -f docker-compose.dev.yml up --build` (Web UI live at `http://localhost:5173`)
 
 ---
 
@@ -245,6 +248,7 @@ RedWolf/
 ├── Dockerfile                 # Multi-stage production container build (Web UI + Go Core + Assets)
 ├── docker-compose.yml         # Host-networking appliance deployment
 ├── docker-compose.macvlan.yml # Isolated physical interface Macvlan deployment
+├── docker-compose.dev.yml     # Live frontend development environment with Vite HMR
 ├── cmd/
 │   ├── redwolf/               # RedWolf Core server daemon entrypoint
 │   └── redwolf-discovery/     # In-memory bare-metal discovery agent entrypoint
