@@ -60,9 +60,18 @@ func (cfg *DeploymentConfig) Validate() error {
 		return fmt.Errorf("nodeId is required")
 	}
 
-	switch cfg.OS {
-	case OSAlmaLinux9, OSAlmaLinux8, OSDebian12, OSAlmaLinux10, OSDebian13:
-		// Valid distribution
+	normalizedOS := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(string(cfg.OS), " ", ""), "-", ""))
+	switch normalizedOS {
+	case "almalinux9":
+		cfg.OS = OSAlmaLinux9
+	case "almalinux8":
+		cfg.OS = OSAlmaLinux8
+	case "almalinux10":
+		cfg.OS = OSAlmaLinux10
+	case "debian12":
+		cfg.OS = OSDebian12
+	case "debian13":
+		cfg.OS = OSDebian13
 	default:
 		return fmt.Errorf("unsupported operating system: %s", cfg.OS)
 	}
