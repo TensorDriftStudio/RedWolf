@@ -86,4 +86,57 @@ func TestDeploymentConfig_Validate(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid static IP and gateway, got: %v", err)
 	}
+
+	// 9. Software RAID 1 validation
+	cfg = validBase
+	cfg.Storage = StorageConfig{
+		RAIDLevel:    RAIDLevel1,
+		TargetDrives: []string{"/dev/nvme0n1"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error for RAID 1 with only 1 drive, got nil")
+	}
+
+	cfg.Storage.TargetDrives = []string{"/dev/nvme0n1", "/dev/nvme1n1"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid RAID 1 with 2 drives, got: %v", err)
+	}
+
+	// 10. Software RAID 10 validation
+	cfg.Storage.RAIDLevel = RAIDLevel10
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error for RAID 10 with 2 drives, got nil")
+	}
+
+	cfg.Storage.TargetDrives = []string{"/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid RAID 10 with 4 drives, got: %v", err)
+	}
+
+	// 11. LVM validation
+	cfg = validBase
+	cfg.Storage = StorageConfig{
+		LayoutMode: PartitioningLVM,
+		LVMVolumes: []LVMVolumeConfig{
+			{Name: "", MountPoint: "/", SizeGB: 50, FSType: "xfs"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error for empty LVM volume name, got nil")
+	}
+
+	cfg.Storage.LVMVolumes = []LVMVolumeConfig{
+		{Name: "root", MountPoint: "/", SizeGB: 0, FSType: "xfs"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error for LVM volume size < 1 GB, got nil")
+	}
+
+	cfg.Storage.LVMVolumes = []LVMVolumeConfig{
+		{Name: "root", MountPoint: "/", SizeGB: 50, FSType: "xfs"},
+		{Name: "var", MountPoint: "/var", SizeGB: 100, FSType: "xfs"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid LVM volumes, got: %v", err)
+	}
 }

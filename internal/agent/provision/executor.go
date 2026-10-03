@@ -27,10 +27,20 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 		"drive", targetDrive,
 	)
 
-	// Step 1: Preparation & Storage Surface Sanitization
-	_ = reporter.Report(ctx, nodeID, 5, "Preparing block storage target...", fmt.Sprintf("Target drive locked: %s. Clearing old partition tables...", targetDrive))
-	if err := WipeTargetDisk(ctx, targetDrive); err != nil {
-		slog.WarnContext(ctx, "non-fatal warning during target disk pre-wipe", "error", err)
+	// Step 1: Storage Architecture & Topology Preparation (Single disk, mdraid, or LVM)
+	_ = reporter.Report(ctx, nodeID, 5, "Preparing block storage target...", "Configuring storage topology and sanitizing block targets...")
+	layout, err := SetupStorageArchitecture(ctx, task.Config)
+	if err != nil {
+		slog.WarnContext(ctx, "storage architecture setup warning; proceeding with fallback", "error", err)
+		layout = &StorageLayoutResult{
+			TargetDrive: targetDrive,
+			ESPDrives:   []string{targetDrive},
+		}
+	}
+
+	streamTarget := layout.TargetDrive
+	if streamTarget == "" {
+		streamTarget = targetDrive
 	}
 
 	// Step 2: Stream OS image with sparse block writes
@@ -38,7 +48,7 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 		_ = reporter.Report(ctx, nodeID, pct, fmt.Sprintf("Streaming %s...", task.OS), msg)
 	}
 
-	if err := StreamImage(ctx, task.ImageURL, targetDrive, onProgress); err != nil {
+	if err := StreamImage(ctx, task.ImageURL, streamTarget, onProgress); err != nil {
 		errMsg := fmt.Sprintf("Image streaming failed: %v", err)
 		_ = reporter.Report(ctx, nodeID, 0, "Deployment Failed", errMsg)
 		return fmt.Errorf("streaming error: %w", err)
@@ -46,22 +56,24 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 
 	// Step 3: Repair secondary GPT header boundary
 	_ = reporter.Report(ctx, nodeID, 75, "Expanding secondary GPT header...", "Relocating secondary GPT table to physical drive end")
-	if err := RepairGPTHeader(ctx, targetDrive); err != nil {
+	if err := RepairGPTHeader(ctx, streamTarget); err != nil {
 		slog.WarnContext(ctx, "non-fatal warning during gpt repair", "error", err)
 	}
 
 	// Step 4: Direct Cloud-Init NoCloud injection into mounted rootfs
 	_ = reporter.Report(ctx, nodeID, 85, "Injecting Cloud-Init NoCloud seed...", "Writing user-data, meta-data, and network-config")
-	if err := InjectCloudInit(ctx, targetDrive, task.Config, bootMAC); err != nil {
+	if err := InjectCloudInit(ctx, streamTarget, task.Config, bootMAC); err != nil {
 		errMsg := fmt.Sprintf("Cloud-Init injection failed: %v", err)
 		_ = reporter.Report(ctx, nodeID, 0, "Deployment Failed", errMsg)
 		return fmt.Errorf("cloud-init injection error: %w", err)
 	}
 
-	// Step 5: Register UEFI bootloader in NVRAM
+	// Step 5: Register UEFI bootloader in NVRAM for all ESP targets
 	_ = reporter.Report(ctx, nodeID, 95, "Registering UEFI boot entry...", "Configuring NVRAM with efibootmgr")
-	if err := ConfigureBootloader(ctx, targetDrive, task.OS); err != nil {
-		slog.WarnContext(ctx, "non-fatal warning during bootloader config", "error", err)
+	for _, espTarget := range layout.ESPDrives {
+		if err := ConfigureBootloader(ctx, espTarget, task.OS); err != nil {
+			slog.WarnContext(ctx, "non-fatal warning during bootloader config", "drive", espTarget, "error", err)
+		}
 	}
 
 	// Step 6: Finalize and trigger reboot into production OS

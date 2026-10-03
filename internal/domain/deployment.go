@@ -26,6 +26,33 @@ const (
 	PartitioningRAID1    PartitioningPreset = "raid1"
 )
 
+// RAIDLevel specifies Software RAID topology.
+type RAIDLevel string
+
+const (
+	RAIDLevelNone RAIDLevel = "none"
+	RAIDLevel0    RAIDLevel = "raid0"
+	RAIDLevel1    RAIDLevel = "raid1"
+	RAIDLevel10   RAIDLevel = "raid10"
+)
+
+// LVMVolumeConfig specifies a logical volume allocation.
+type LVMVolumeConfig struct {
+	Name       string `json:"name"`
+	MountPoint string `json:"mountPoint"`
+	SizeGB     int    `json:"sizeGb"`
+	FSType     string `json:"fsType"` // "xfs", "ext4"
+}
+
+// StorageConfig encapsulates advanced multi-disk, RAID, and LVM configuration.
+type StorageConfig struct {
+	LayoutMode   PartitioningPreset `json:"layoutMode"`             // "standard", "lvm", "raid1"
+	RAIDLevel    RAIDLevel          `json:"raidLevel,omitempty"`    // "none", "raid0", "raid1", "raid10"
+	TargetDrives []string           `json:"targetDrives,omitempty"` // Multi-disk targets
+	LVMVolumes   []LVMVolumeConfig  `json:"lvmVolumes,omitempty"`
+	SwapSizeGB   int                `json:"swapSizeGb,omitempty"`
+}
+
 // NetworkMode specifies IP allocation strategy.
 type NetworkMode string
 
@@ -40,6 +67,7 @@ type DeploymentConfig struct {
 	OS                 OperatingSystem    `json:"os"`
 	TargetDrivePath    string             `json:"targetDrivePath"`
 	PartitioningPreset PartitioningPreset `json:"partitioningPreset"`
+	Storage            StorageConfig      `json:"storage,omitempty"`
 	RootPassword       string             `json:"rootPassword"`
 	SSHKeys            []string           `json:"sshKeys"`
 	NetworkMode        NetworkMode        `json:"networkMode"`
@@ -76,8 +104,47 @@ func (cfg *DeploymentConfig) Validate() error {
 		return fmt.Errorf("unsupported operating system: %s", cfg.OS)
 	}
 
-	if strings.TrimSpace(cfg.TargetDrivePath) == "" {
+	// Synchronize target drives
+	if len(cfg.Storage.TargetDrives) == 0 && strings.TrimSpace(cfg.TargetDrivePath) != "" {
+		cfg.Storage.TargetDrives = []string{strings.TrimSpace(cfg.TargetDrivePath)}
+	} else if len(cfg.Storage.TargetDrives) > 0 && strings.TrimSpace(cfg.TargetDrivePath) == "" {
+		cfg.TargetDrivePath = cfg.Storage.TargetDrives[0]
+	}
+
+	if len(cfg.Storage.TargetDrives) == 0 {
 		return ErrInvalidStorageDevice
+	}
+
+	// Validate Software RAID requirements
+	if cfg.PartitioningPreset == PartitioningRAID1 && (cfg.Storage.RAIDLevel == "" || cfg.Storage.RAIDLevel == RAIDLevelNone) {
+		cfg.Storage.RAIDLevel = RAIDLevel1
+	}
+
+	switch cfg.Storage.RAIDLevel {
+	case RAIDLevel1:
+		if len(cfg.Storage.TargetDrives) < 2 {
+			return fmt.Errorf("software RAID 1 requires at least 2 target storage drives (selected %d)", len(cfg.Storage.TargetDrives))
+		}
+	case RAIDLevel0:
+		if len(cfg.Storage.TargetDrives) < 2 {
+			return fmt.Errorf("software RAID 0 requires at least 2 target storage drives (selected %d)", len(cfg.Storage.TargetDrives))
+		}
+	case RAIDLevel10:
+		if len(cfg.Storage.TargetDrives) < 4 {
+			return fmt.Errorf("software RAID 10 requires at least 4 target storage drives (selected %d)", len(cfg.Storage.TargetDrives))
+		}
+	}
+
+	// Validate LVM Volume requirements
+	if cfg.Storage.LayoutMode == PartitioningLVM || cfg.PartitioningPreset == PartitioningLVM {
+		for _, vol := range cfg.Storage.LVMVolumes {
+			if strings.TrimSpace(vol.Name) == "" {
+				return fmt.Errorf("lvm volume name cannot be empty")
+			}
+			if vol.SizeGB < 1 {
+				return fmt.Errorf("lvm volume %s size must be at least 1 GB", vol.Name)
+			}
+		}
 	}
 
 	if len(cfg.RootPassword) < 8 && len(cfg.SSHKeys) == 0 {

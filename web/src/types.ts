@@ -79,11 +79,29 @@ export interface ServerNode {
 
 export type OperatingSystem = 'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13';
 
+export type RAIDLevel = 'none' | 'raid0' | 'raid1' | 'raid10';
+
+export interface LVMVolume {
+  name: string;
+  mountPoint: string;
+  sizeGb: number;
+  fsType: 'xfs' | 'ext4';
+}
+
+export interface StorageConfig {
+  layoutMode: 'standard' | 'lvm' | 'raid1';
+  raidLevel?: RAIDLevel;
+  targetDrives?: string[];
+  lvmVolumes?: LVMVolume[];
+  swapSizeGb?: number;
+}
+
 export interface DeploymentConfig {
   nodeId: string;
   os: OperatingSystem;
   targetDrivePath: string;
   partitioningPreset: 'standard' | 'lvm' | 'raid1';
+  storage?: StorageConfig;
   rootPassword: string;
   sshKeys: string[];
   networkMode: 'static' | 'dhcp';

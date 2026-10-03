@@ -70,6 +70,13 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		return fmt.Errorf("failed writing network-config: %w", err)
 	}
 
+	// Step 7: Inject mdadm.conf if Software RAID is configured
+	if cfg.Storage.RAIDLevel == domain.RAIDLevel1 || cfg.Storage.RAIDLevel == domain.RAIDLevel0 || cfg.Storage.RAIDLevel == domain.RAIDLevel10 || cfg.PartitioningPreset == domain.PartitioningRAID1 {
+		if err := InjectMDADMConfig(ctx, mountPoint); err != nil {
+			slog.WarnContext(ctx, "non-fatal warning injecting mdadm.conf into rootfs", "error", err)
+		}
+	}
+
 	slog.InfoContext(ctx, "cloud-init nocloud seed injected successfully",
 		"partition", rootPart,
 		"seed_dir", seedDir,
@@ -140,6 +147,11 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 	}
 
 	sb.WriteString("\npackage_update: false\n")
+	if cfg.Storage.RAIDLevel == domain.RAIDLevel1 || cfg.Storage.RAIDLevel == domain.RAIDLevel0 || cfg.Storage.RAIDLevel == domain.RAIDLevel10 || cfg.PartitioningPreset == domain.PartitioningRAID1 || cfg.PartitioningPreset == domain.PartitioningLVM || cfg.Storage.LayoutMode == domain.PartitioningLVM {
+		sb.WriteString("packages:\n")
+		sb.WriteString("  - mdadm\n")
+		sb.WriteString("  - lvm2\n")
+	}
 	sb.WriteString("runcmd:\n")
 	sb.WriteString("  - [ echo, 'RedWolf Bare-Metal Provisioning Complete' ]\n")
 
