@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/tensordriftstudio/redwolf/internal/domain"
 	"github.com/tensordriftstudio/redwolf/internal/port"
 	"github.com/tensordriftstudio/redwolf/internal/service"
 	"github.com/tensordriftstudio/redwolf/internal/version"
@@ -85,10 +86,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 	}
 
-	// User Management REST API
+	// User Management REST API (Requires Admin role)
 	if cfg.UserSvc != nil {
 		userHandler := NewUserHandler(cfg.UserSvc, cfg.AuthSvc)
 		r.Route("/api/users", func(r chi.Router) {
+			if cfg.AuthSvc != nil {
+				r.Use(Authenticator(cfg.AuthSvc))
+				r.Use(RequireRole(domain.RoleAdmin))
+			}
 			r.Get("/", userHandler.List)
 			r.Post("/", userHandler.Create)
 			r.Get("/{id}", userHandler.Get)
@@ -98,21 +103,27 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 	}
 
-
-	// Settings & Directory Testing REST API
+	// Settings & Directory Testing REST API (Requires Admin role)
 	if cfg.SettingsSvc != nil {
 		settingsHandler := NewSettingsHandler(cfg.SettingsSvc, cfg.DNSMasq)
 		r.Route("/api/settings", func(r chi.Router) {
+			if cfg.AuthSvc != nil {
+				r.Use(Authenticator(cfg.AuthSvc))
+				r.Use(RequireRole(domain.RoleAdmin))
+			}
 			r.Get("/", settingsHandler.Get)
 			r.Put("/", settingsHandler.Update)
 			r.Post("/test-directory", settingsHandler.TestDirectory)
 		})
 	}
 
-	// Cloud-Init Templates REST API
+	// Cloud-Init Templates REST API (Requires Authentication)
 	if cfg.Templates != nil {
 		templateHandler := NewTemplateHandler(cfg.Templates)
 		r.Route("/api/templates", func(r chi.Router) {
+			if cfg.AuthSvc != nil {
+				r.Use(Authenticator(cfg.AuthSvc))
+			}
 			r.Get("/", templateHandler.List)
 			r.Post("/", templateHandler.Create)
 			r.Get("/{id}", templateHandler.Get)
@@ -121,12 +132,17 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 	}
 
-	// OS Image Catalog REST API
+	// OS Image Catalog REST API (Requires Authentication)
 	if cfg.ImageCatalog != nil {
 		imageHandler := NewImageHandler(cfg.ImageCatalog)
-		r.Get("/api/images", imageHandler.List)
-		r.Post("/api/images/download", imageHandler.Download)
-		r.Get("/api/images/status", imageHandler.Status)
+		r.Route("/api/images", func(r chi.Router) {
+			if cfg.AuthSvc != nil {
+				r.Use(Authenticator(cfg.AuthSvc))
+			}
+			r.Get("/", imageHandler.List)
+			r.Post("/download", imageHandler.Download)
+			r.Get("/status", imageHandler.Status)
+		})
 	}
 
 	var bmcHandler *BMCHandler
@@ -135,22 +151,30 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	r.Route("/api/nodes", func(r chi.Router) {
-		r.Get("/", nodeHandler.List)
+		// Agent endpoints (unauthenticated by design for in-memory PXE discovery agent)
 		r.Post("/telemetry", nodeHandler.IngestTelemetry)
 		r.Get("/task/by-mac/{mac}", deployHandler.GetTaskByMAC)
-		r.Route("/{id}", func(r chi.Router) {
-			r.Get("/", nodeHandler.Get)
-			r.Delete("/", nodeHandler.Delete)
-			r.Post("/reset", nodeHandler.Reset)
-			r.Post("/deploy", deployHandler.Deploy)
-			r.Post("/progress", deployHandler.UpdateProgress)
-			r.Get("/task", deployHandler.GetTask)
-			if bmcHandler != nil {
-				r.Post("/bmc/rotate", bmcHandler.Rotate)
-				r.Get("/bmc/credentials", bmcHandler.GetCredentials)
-				r.Get("/power", bmcHandler.GetPower)
-				r.Post("/power", bmcHandler.SetPower)
+		r.Post("/{id}/progress", deployHandler.UpdateProgress)
+
+		// Operator & Admin Fleet Management endpoints (Authenticated)
+		r.Group(func(r chi.Router) {
+			if cfg.AuthSvc != nil {
+				r.Use(Authenticator(cfg.AuthSvc))
 			}
+			r.Get("/", nodeHandler.List)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Get("/", nodeHandler.Get)
+				r.Delete("/", nodeHandler.Delete)
+				r.Post("/reset", nodeHandler.Reset)
+				r.Post("/deploy", deployHandler.Deploy)
+				r.Get("/task", deployHandler.GetTask)
+				if bmcHandler != nil {
+					r.Post("/bmc/rotate", bmcHandler.Rotate)
+					r.Get("/bmc/credentials", bmcHandler.GetCredentials)
+					r.Get("/power", bmcHandler.GetPower)
+					r.Post("/power", bmcHandler.SetPower)
+				}
+			})
 		})
 	})
 

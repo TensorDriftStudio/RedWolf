@@ -46,6 +46,15 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	http.SetCookie(w, &http.Cookie{
+		Name:     "redwolf_session",
+		Value:    resp.Token,
+		Path:     "/",
+		Expires:  resp.ExpiresAt,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -72,6 +81,13 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if token != "" {
 		h.authSvc.Logout(token)
 	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "redwolf_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"loggedOut": true})
 }
 

@@ -124,12 +124,15 @@ func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
-	// Determine caller identity from session token if available
 	callerID := ""
-	token := extractBearerToken(r)
-	if token != "" && h.authSvc != nil {
-		if caller, ok := h.authSvc.ValidateToken(token); ok && caller != nil {
-			callerID = caller.ID
+	if user := UserFromContext(r.Context()); user != nil {
+		callerID = user.ID
+	} else {
+		token := extractBearerToken(r)
+		if token != "" && h.authSvc != nil {
+			if caller, ok := h.authSvc.ValidateToken(token); ok && caller != nil {
+				callerID = caller.ID
+			}
 		}
 	}
 

@@ -38,13 +38,22 @@ func CollectBMC(ctx context.Context, vendor domain.Vendor) (*domain.BMCInfo, err
 	bmc.Channel = channel
 
 	// Step 2: Query initial LAN parameters
-	mac, ip, isDHCP := queryLANConfig(ctx, channel)
+	mac, ip, isDHCP, linkDetected := queryLANConfig(ctx, channel)
 	bmc.MAC = mac
 	bmc.IP = ip
 	bmc.DHCP = isDHCP
 
-	// Step 3: Multi-vendor specific port configuration
-	configureDedicatedPort(ctx, vendor, channel)
+	// Step 3: Multi-vendor specific port configuration (ONLY if unassigned or link down)
+	// Adheres to non-destructive telemetry rule: do NOT disrupt operational BMC controllers or wipe static IPs
+	if bmc.IP == "" || bmc.IP == "0.0.0.0" || !linkDetected {
+		slog.InfoContext(ctx, "bmc network unconfigured or link down; configuring dedicated management port mode",
+			"vendor", vendor,
+			"channel", channel,
+			"current_ip", bmc.IP,
+			"link_detected", linkDetected,
+		)
+		configureDedicatedPort(ctx, vendor, channel)
+	}
 
 	// Step 4: STP / RSTP Polling Backoff
 	// If BMC has no IP or 0.0.0.0, wait with backoff loop (up to 90 seconds)
@@ -94,15 +103,20 @@ func detectLANChannel(ctx context.Context) int {
 	return 1
 }
 
-func queryLANConfig(ctx context.Context, channel int) (mac string, ip string, isDHCP bool) {
+func queryLANConfig(ctx context.Context, channel int) (mac string, ip string, isDHCP bool, linkDetected bool) {
 	cmd := exec.CommandContext(ctx, "ipmitool", "lan", "print", fmt.Sprintf("%d", channel))
 	out, err := cmd.Output()
 	if err != nil {
-		return "", "0.0.0.0", true
+		return "", "0.0.0.0", true, false
 	}
+	return parseLANPrintOutput(out)
+}
 
+func parseLANPrintOutput(out []byte) (mac string, ip string, isDHCP bool, linkDetected bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	isDHCP = true
+	linkDetected = false
+	ip = "0.0.0.0"
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		parts := strings.SplitN(line, ":", 2)
@@ -111,6 +125,9 @@ func queryLANConfig(ctx context.Context, channel int) (mac string, ip string, is
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
+
+		keyLower := strings.ToLower(key)
+		valLower := strings.ToLower(val)
 
 		switch {
 		case strings.EqualFold(key, "IP Address") && !strings.Contains(key, "Source"):
@@ -121,12 +138,16 @@ func queryLANConfig(ctx context.Context, channel int) (mac string, ip string, is
 		case strings.EqualFold(key, "MAC Address"):
 			mac = strings.ToLower(val)
 		case strings.EqualFold(key, "IP Address Source"):
-			if strings.Contains(strings.ToLower(val), "static") {
+			if strings.Contains(valLower, "static") {
 				isDHCP = false
+			}
+		case strings.Contains(keyLower, "link status") || strings.Contains(keyLower, "link"):
+			if strings.Contains(valLower, "detected") || strings.Contains(valLower, "up") || strings.Contains(valLower, "ok") {
+				linkDetected = true
 			}
 		}
 	}
-	return mac, ip, isDHCP
+	return mac, ip, isDHCP, linkDetected
 }
 
 func configureDedicatedPort(ctx context.Context, vendor domain.Vendor, channel int) {
@@ -168,10 +189,14 @@ func pollBMCIpWithBackoff(ctx context.Context, channel int, timeout time.Duratio
 				return ""
 			}
 
-			_, ip, _ := queryLANConfig(ctx, channel)
+			_, ip, _, linkDetected := queryLANConfig(ctx, channel)
+			if !linkDetected {
+				slog.DebugContext(ctx, "bmc switch port stp negotiation in progress (link carrier not yet detected)", "channel", channel)
+			}
 			if ip != "" && ip != "0.0.0.0" {
 				parsed := net.ParseIP(ip)
 				if parsed != nil && !parsed.IsUnspecified() && !parsed.IsLoopback() {
+					slog.InfoContext(ctx, "bmc ip successfully resolved via dhcp", "ip", ip, "link_detected", linkDetected)
 					return ip
 				}
 			}

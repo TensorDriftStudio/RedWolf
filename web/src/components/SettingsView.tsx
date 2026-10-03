@@ -22,6 +22,7 @@ import {
   Shield,
   AlertTriangle
 } from 'lucide-react';
+import { getAuthHeaders } from '../utils/auth';
 
 
 interface SettingsViewProps {
@@ -96,6 +97,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
   const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
 
   // Fetch appliance version info
@@ -115,7 +117,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
   const [templateFormError, setTemplateFormError] = useState<string | null>(null);
 
   const loadTemplates = () => {
-    fetch('/api/templates')
+    fetch('/api/templates', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: CloudInitTemplate[]) => setTemplates(data))
       .catch(() => {});
@@ -130,7 +134,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
   const [isDownloadingImage, setIsDownloadingImage] = useState<string | null>(null);
 
   const loadImages = () => {
-    fetch('/api/images')
+    fetch('/api/images', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: OSImageInfo[]) => setImages(data))
       .catch(() => {});
@@ -157,7 +163,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch('/api/images/download', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({ os: osType }),
       });
       if (res.ok) {
@@ -192,7 +201,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
 
   const loadUsers = useCallback(() => {
     setIsLoadingUsers(true);
-    fetch('/api/users')
+    fetch('/api/users', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: User[]) => {
         if (Array.isArray(data)) setUsers(data);
@@ -259,7 +270,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           username: formUsername.trim(),
           displayName: formDisplayName.trim() || formUsername.trim(),
@@ -289,7 +303,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch(`/api/users/${selectedUser.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           displayName: formDisplayName.trim() || selectedUser.username,
           email: formEmail.trim(),
@@ -326,7 +343,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch(`/api/users/${selectedUser.id}/password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({ newPassword: formPassword }),
       });
 
@@ -348,6 +368,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch(`/api/users/${selectedUser.id}`, {
         method: 'DELETE',
+        headers: { ...getAuthHeaders() },
       });
 
       if (!res.ok) {
@@ -365,7 +386,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
   // Load existing settings from API if available
   useEffect(() => {
     setIsLoadingSettings(true);
-    fetch('/api/settings')
+    fetch('/api/settings', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => {
         if (res.ok) return res.json();
         throw new Error('Not reachable');
@@ -406,17 +429,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch('/api/settings', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify(updated),
       });
       if (res.ok) {
         setSaveSuccess(true);
+        setSaveError(null);
         setTimeout(() => setSaveSuccess(false), 4000);
+      } else {
+        const errData = await res.json().catch(() => ({ error: 'Failed saving configuration' }));
+        setSaveError(errData.error || 'Failed saving configuration');
+        setTimeout(() => setSaveError(null), 5000);
       }
     } catch {
-      // Local fallback
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 4000);
+      setSaveError('Network error: RedWolf appliance unreachable');
+      setTimeout(() => setSaveError(null), 5000);
     } finally {
       setIsSaving(false);
     }
@@ -428,7 +458,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     try {
       const res = await fetch('/api/settings/test-directory', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           source: directoryType === 'active_directory' ? 'ACTIVE_DIRECTORY' : 'LDAP',
           ldap: settings.auth.ldap,
@@ -444,7 +477,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
     } catch {
       setDirectoryTestResult({
         success: false,
-        latencyMs: 15,
+        latencyMs: 0,
         message: directoryType === 'active_directory'
           ? 'Could not connect to Active Directory Domain Controller. Verify DNS and LDAPS port 636.'
           : 'Could not connect to configured LDAP server. Check host reachability and firewall port 389.',
@@ -479,6 +512,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
             <span className="text-xs text-slate-400 flex items-center gap-1.5 font-medium">
               <Loader2 className="w-3.5 h-3.5 animate-spin text-redwolf-primary" />
               Syncing...
+            </span>
+          )}
+          {saveError && (
+            <span className="text-xs text-rose-400 flex items-center gap-1.5 font-medium">
+              <AlertTriangle className="w-4 h-4 text-rose-400" />
+              {saveError}
             </span>
           )}
           {saveSuccess && (
@@ -1958,7 +1997,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
                         onClick={async () => {
                           await fetch(`/api/templates/${tpl.id}`, {
                             method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: {
+                              'Content-Type': 'application/json',
+                              ...getAuthHeaders(),
+                            },
                             body: JSON.stringify({ ...tpl, isDefault: true }),
                           });
                           loadTemplates();
@@ -1973,7 +2015,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
                     type="button"
                     onClick={async () => {
                       if (confirm(`Delete template "${tpl.name}"?`)) {
-                        await fetch(`/api/templates/${tpl.id}`, { method: 'DELETE' });
+                        await fetch(`/api/templates/${tpl.id}`, {
+                          method: 'DELETE',
+                          headers: { ...getAuthHeaders() },
+                        });
                         loadTemplates();
                       }
                     }}
@@ -2099,7 +2144,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
                       try {
                         const res = await fetch(url, {
                           method,
-                          headers: { 'Content-Type': 'application/json' },
+                          headers: {
+                            'Content-Type': 'application/json',
+                            ...getAuthHeaders(),
+                          },
                           body: JSON.stringify(editingTemplate),
                         });
                         if (!res.ok) {

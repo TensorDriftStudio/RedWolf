@@ -48,8 +48,8 @@ var supportedTargets = []imageTarget{
 	{
 		os:          domain.OSAlmaLinux9,
 		displayName: "AlmaLinux 9 (Enterprise LTS)",
-		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst", "almalinux-9-genericcloud.raw", "AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"},
-		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
+		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst", "almalinux-9-genericcloud.raw"},
+		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst",
 	},
 	{
 		os:          domain.OSDebian12,
@@ -60,8 +60,8 @@ var supportedTargets = []imageTarget{
 	{
 		os:          domain.OSAlmaLinux8,
 		displayName: "AlmaLinux 8 (Legacy Enterprise)",
-		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst", "almalinux-8-genericcloud.raw", "AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"},
-		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
+		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst", "almalinux-8-genericcloud.raw"},
+		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst",
 	},
 	{
 		os:          domain.OSAlmaLinux10,

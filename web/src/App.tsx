@@ -10,6 +10,7 @@ import { LoginView } from './components/LoginView';
 import { useNodes } from './hooks/useNodes';
 import { useAuth } from './hooks/useAuth';
 import type { Vendor, NodeStatus, CloudInitTemplate } from './types';
+import { getAuthHeaders } from './utils/auth';
 import { Filter, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export function App() {
@@ -52,7 +53,9 @@ export function App() {
 
   // Dynamically query subnet configuration from Core settings
   useEffect(() => {
-    fetch('/api/settings')
+    fetch('/api/settings', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.network?.subnetCidr) {
@@ -60,11 +63,13 @@ export function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [isAuthenticated]);
 
   // Fetch template count for sidebar badge
   useEffect(() => {
-    fetch('/api/templates')
+    fetch('/api/templates', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: CloudInitTemplate[]) => {
         if (Array.isArray(data)) {
@@ -72,7 +77,7 @@ export function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [isAuthenticated]);
 
   // Synchronously resolve live node instances from current nodes state
   const inspectedNode = useMemo(() => {

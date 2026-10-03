@@ -27,8 +27,11 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 		"drive", targetDrive,
 	)
 
-	// Step 1: Preparation
-	_ = reporter.Report(ctx, nodeID, 5, "Preparing block storage target...", fmt.Sprintf("Target drive locked: %s", targetDrive))
+	// Step 1: Preparation & Storage Surface Sanitization
+	_ = reporter.Report(ctx, nodeID, 5, "Preparing block storage target...", fmt.Sprintf("Target drive locked: %s. Clearing old partition tables...", targetDrive))
+	if err := WipeTargetDisk(ctx, targetDrive); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning during target disk pre-wipe", "error", err)
+	}
 
 	// Step 2: Stream OS image with sparse block writes
 	onProgress := func(pct int, writtenBytes int64, msg string) {
@@ -66,7 +69,7 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 	slog.InfoContext(ctx, "bare-metal provisioning complete; issuing reboot signal", "node_id", nodeID)
 
 	time.Sleep(2 * time.Second)
-	rebootCmd := exec.Command("reboot", "-f")
+	rebootCmd := exec.CommandContext(ctx, "reboot", "-f")
 	_ = rebootCmd.Run()
 
 	return nil

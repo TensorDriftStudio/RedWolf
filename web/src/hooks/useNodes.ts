@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ServerNode, DeploymentConfig } from '../types';
+import { getAuthHeaders } from '../utils/auth';
+
 export function useNodes() {
   const [nodes, setNodes] = useState<ServerNode[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -11,7 +13,9 @@ export function useNodes() {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/nodes');
+      const res = await fetch('/api/nodes', {
+        headers: { ...getAuthHeaders() },
+      });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -36,7 +40,10 @@ export function useNodes() {
     try {
       const res = await fetch(`/api/nodes/${config.nodeId}/deploy`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify(config),
       });
 
@@ -77,6 +84,7 @@ export function useNodes() {
     try {
       const res = await fetch(`/api/nodes/${nodeId}/reset`, {
         method: 'POST',
+        headers: { ...getAuthHeaders() },
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: 'Failed resetting node' }));
@@ -96,6 +104,7 @@ export function useNodes() {
     try {
       const res = await fetch(`/api/nodes/${nodeId}`, {
         method: 'DELETE',
+        headers: { ...getAuthHeaders() },
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({ error: 'Failed deleting node' }));

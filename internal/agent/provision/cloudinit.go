@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tensordriftstudio/redwolf/internal/adapter/crypto"
 	"github.com/tensordriftstudio/redwolf/internal/domain"
@@ -39,7 +40,9 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		return fmt.Errorf("failed mounting partition %s to %s: %w (output: %s)", rootPart, mountPoint, err, string(out))
 	}
 	defer func() {
-		_ = exec.Command("umount", mountPoint).Run()
+		umountCtx, umountCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer umountCancel()
+		_ = exec.CommandContext(umountCtx, "umount", mountPoint).Run()
 	}()
 
 	// Step 3: Create NoCloud seed directory

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { ServerNode, DeploymentConfig, OperatingSystem, CloudInitTemplate } from '../types';
+import { getAuthHeaders } from '../utils/auth';
 import { VendorBadge } from './Badges';
 import { 
   X, Check, ArrowRight, ArrowLeft, HardDrive, Play, Loader2, Terminal, FileCode, ChevronDown, ChevronUp, CheckCircle2, AlertCircle
@@ -35,7 +36,9 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   const [showCustomYaml, setShowCustomYaml] = useState<boolean>(false);
 
   useEffect(() => {
-    fetch('/api/templates')
+    fetch('/api/templates', {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: CloudInitTemplate[]) => {
         if (data && data.length > 0) {

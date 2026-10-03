@@ -69,45 +69,9 @@ export function useAuth() {
         return data.user;
       }
 
-      // If backend rejected or not reachable, provide fallback for local dev admin
-      if (source === 'LOCAL' && username === 'admin' && (password === 'admin123' || password === 'redwolf123' || password === 'admin')) {
-        const fallbackUser: User = {
-          id: 'usr-local-admin',
-          username: 'admin',
-          displayName: 'System Administrator',
-          email: 'admin@redwolf.internal',
-          role: 'ADMIN',
-          source: 'LOCAL',
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        };
-        setUser(fallbackUser);
-        localStorage.setItem(STORAGE_KEY_TOKEN, 'demo-token-enterprise');
-        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(fallbackUser));
-        return fallbackUser;
-      }
-
       const errData = await res.json().catch(() => ({ error: 'Invalid credentials or directory unreachable' }));
       throw new Error(errData.error || 'Authentication failed');
     } catch (err: unknown) {
-      // Also check fallback in offline/standalone client
-      if (source === 'LOCAL' && username === 'admin' && (password === 'admin123' || password === 'redwolf123' || password === 'admin')) {
-        const fallbackUser: User = {
-          id: 'usr-local-admin',
-          username: 'admin',
-          displayName: 'System Administrator',
-          email: 'admin@redwolf.internal',
-          role: 'ADMIN',
-          source: 'LOCAL',
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        };
-        setUser(fallbackUser);
-        localStorage.setItem(STORAGE_KEY_TOKEN, 'demo-token-enterprise');
-        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(fallbackUser));
-        return fallbackUser;
-      }
-
       const msg = err instanceof Error ? err.message : 'Authentication failed';
       setError(msg);
       throw err;

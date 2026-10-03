@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import type { ServerNode, PowerState } from '../types';
+import { getAuthHeaders } from '../utils/auth';
 import { VendorBadge, StatusBadge } from './Badges';
-import { X, Cpu, HardDrive, Network, Shield, ExternalLink, Play, Key, Eye, EyeOff, Copy, RotateCw, Check, Power, Trash2 } from 'lucide-react';
+import { X, Cpu, HardDrive, Network, Shield, ExternalLink, Play, Key, Eye, EyeOff, Copy, RotateCw, Check, Power, Trash2, AlertCircle } from 'lucide-react';
 
 interface NodeDrawerProps {
   node: ServerNode | null;
@@ -18,6 +19,7 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
   const [isRotating, setIsRotating] = useState<boolean>(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState<boolean>(false);
   const [rotateSuccess, setRotateSuccess] = useState<string | null>(null);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
 
   // Power State Management
@@ -34,11 +36,14 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
     if (!node?.id) return;
     setRevealedPassword(null);
     setRotateSuccess(null);
+    setCredentialError(null);
     setPowerFeedback(null);
     setShowRotateConfirm(false);
     setShowDeleteConfirm(false);
     setCopied(false);
-    fetch(`/api/nodes/${node.id}/power`)
+    fetch(`/api/nodes/${node.id}/power`, {
+      headers: { ...getAuthHeaders() },
+    })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.powerState) {
@@ -55,7 +60,10 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
     try {
       const res = await fetch(`/api/nodes/${node.id}/power`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({ action }),
       });
       if (res.ok) {
@@ -67,7 +75,7 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
         setPowerFeedback(`Failed: ${err.error || 'Unknown error'}`);
       }
     } catch {
-      setPowerFeedback(`Command '${action}' dispatched.`);
+      setPowerFeedback(`Error: Network failure communicating with appliance.`);
     } finally {
       setIsExecutingPower(false);
     }
@@ -318,16 +326,20 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
                                 return;
                               }
                               setIsRevealing(true);
+                              setCredentialError(null);
                               try {
-                                const res = await fetch(`/api/nodes/${node.id}/bmc/credentials`);
+                                const res = await fetch(`/api/nodes/${node.id}/bmc/credentials`, {
+                                  headers: { ...getAuthHeaders() },
+                                });
                                 if (res.ok) {
                                   const data = await res.json();
                                   setRevealedPassword(data.password);
                                 } else {
-                                  setRevealedPassword('RedWolf@BMC2026!');
+                                  const err = await res.json().catch(() => ({ error: 'Failed retrieving BMC credentials' }));
+                                  setCredentialError(err.error || 'Failed retrieving BMC credentials');
                                 }
                               } catch {
-                                setRevealedPassword('RedWolf@BMC2026!');
+                                setCredentialError('Network error retrieving BMC credentials');
                               } finally {
                                 setIsRevealing(false);
                               }
@@ -360,11 +372,28 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
                       </div>
                     </div>
 
+                    {/* Credential Feedback Messages */}
+                    {credentialError && (
+                      <div className="p-2 rounded bg-red-950/60 border border-red-800 text-[11px] text-red-300 flex items-center gap-1.5">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-400" />
+                        <span>{credentialError}</span>
+                      </div>
+                    )}
+                    {rotateSuccess && (
+                      <div className="p-2 rounded bg-emerald-950/60 border border-emerald-800 text-[11px] text-emerald-300 flex items-center gap-1.5">
+                        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                        <span>{rotateSuccess}</span>
+                      </div>
+                    )}
+
                     {/* Rotation Action */}
                     {!showRotateConfirm ? (
                       <button
                         type="button"
-                        onClick={() => setShowRotateConfirm(true)}
+                        onClick={() => {
+                          setShowRotateConfirm(true);
+                          setCredentialError(null);
+                        }}
                         className="w-full py-1 px-2.5 bg-[#1a212d] hover:bg-[#202938] border border-[#283344] text-slate-300 text-xs rounded transition-colors flex items-center justify-center gap-1.5"
                       >
                         <RotateCw className="h-3 w-3 text-amber-400" />
@@ -381,23 +410,27 @@ export const NodeDrawer: React.FC<NodeDrawerProps> = ({ node, onClose, onDeploy,
                             disabled={isRotating}
                             onClick={async () => {
                               setIsRotating(true);
+                              setCredentialError(null);
+                              setRotateSuccess(null);
                               try {
                                 const res = await fetch(`/api/nodes/${node.id}/bmc/rotate`, {
                                   method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    ...getAuthHeaders(),
+                                  },
                                   body: JSON.stringify({}),
                                 });
                                 if (res.ok) {
                                   const data = await res.json();
                                   setRevealedPassword(data.password);
-                                  setRotateSuccess('Credentials updated.');
+                                  setRotateSuccess('Credentials updated successfully.');
                                 } else {
-                                  setRevealedPassword('W0lf#Secure9824!');
-                                  setRotateSuccess('Credentials updated.');
+                                  const err = await res.json().catch(() => ({ error: 'Failed rotating credentials' }));
+                                  setCredentialError(err.error || 'Failed rotating BMC credentials');
                                 }
                               } catch {
-                                setRevealedPassword('W0lf#Secure9824!');
-                                setRotateSuccess('Credentials updated.');
+                                setCredentialError('Network error while requesting credential rotation');
                               } finally {
                                 setIsRotating(false);
                                 setShowRotateConfirm(false);

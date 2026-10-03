@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     vendor TEXT NOT NULL,
     model TEXT NOT NULL,
-    serial_number TEXT NOT NULL UNIQUE,
+    serial_number TEXT NOT NULL,
     firmware_mode TEXT NOT NULL,
     bios_version TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS node_macs (
 
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
 CREATE INDEX IF NOT EXISTS idx_nodes_boot_mac ON nodes(boot_mac);
+CREATE INDEX IF NOT EXISTS idx_nodes_serial_number ON nodes(serial_number);
 CREATE INDEX IF NOT EXISTS idx_node_macs_node_id ON node_macs(node_id);
 
 CREATE TABLE IF NOT EXISTS users (

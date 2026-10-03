@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
@@ -170,23 +171,118 @@ func fallbackScanStorage(ctx context.Context) ([]domain.StorageDevice, error) {
 		return devices, err
 	}
 
+	byIdMap := buildByIDMapping()
+
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") {
+		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") || strings.HasPrefix(name, "sr") {
 			continue
 		}
 		devPath := "/dev/" + name
-		devices = append(devices, domain.StorageDevice{
+
+		// Read size in sectors from /sys/block/<name>/size
+		sizeBytes := uint64(0)
+		sizeFile := filepath.Join("/sys/block", name, "size")
+		if data, err := os.ReadFile(sizeFile); err == nil {
+			sectors, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+			if err == nil && sectors > 0 {
+				sectorSize := uint64(512)
+				hwSecFile := filepath.Join("/sys/block", name, "queue/logical_block_size")
+				if hwData, err := os.ReadFile(hwSecFile); err == nil {
+					if ss, err := strconv.ParseUint(strings.TrimSpace(string(hwData)), 10, 64); err == nil && ss > 0 {
+						sectorSize = ss
+					}
+				}
+				sizeBytes = sectors * sectorSize
+			}
+		}
+
+		if sizeBytes == 0 {
+			continue
+		}
+
+		// Read rotational flag: 0 = SSD/Flash, 1 = Rotational HDD
+		isRotational := false
+		rotaFile := filepath.Join("/sys/block", name, "queue/rotational")
+		if rotaData, err := os.ReadFile(rotaFile); err == nil {
+			if strings.TrimSpace(string(rotaData)) == "1" {
+				isRotational = true
+			}
+		}
+
+		// Read model and serial if available
+		model := ""
+		for _, mPath := range []string{
+			filepath.Join("/sys/block", name, "device/model"),
+			filepath.Join("/sys/block", name, "device/name"),
+		} {
+			if mData, err := os.ReadFile(mPath); err == nil && len(mData) > 0 {
+				model = strings.TrimSpace(string(mData))
+				break
+			}
+		}
+		if model == "" {
+			model = "Generic Storage"
+		}
+
+		serial := ""
+		for _, sPath := range []string{
+			filepath.Join("/sys/block", name, "device/serial"),
+			filepath.Join("/sys/block", name, "serial"),
+		} {
+			if sData, err := os.ReadFile(sPath); err == nil && len(sData) > 0 {
+				serial = strings.TrimSpace(string(sData))
+				break
+			}
+		}
+		if serial == "" {
+			serial = "UNKNOWN"
+		}
+
+		// Determine transport
+		transport := "UNKNOWN"
+		if strings.HasPrefix(name, "nvme") {
+			transport = "NVME"
+		} else if strings.HasPrefix(name, "sd") {
+			transport = "SATA/SAS"
+		} else if strings.HasPrefix(name, "vd") {
+			transport = "VIRTIO"
+		}
+
+		// Categorize type
+		storageType := "Enterprise SATA/SAS SSD"
+		if transport == "NVME" {
+			storageType = "NVMe PCIe SSD"
+		} else if isRotational {
+			storageType = "Enterprise SAS HDD"
+		} else if transport == "VIRTIO" {
+			storageType = "Virtual Disk"
+		}
+
+		byId := byIdMap[devPath]
+		if byId == "" {
+			byId = devPath
+		}
+
+		device := domain.StorageDevice{
 			Name:      name,
 			Path:      devPath,
-			ByID:      devPath,
-			SizeBytes: 500 * 1000 * 1000 * 1000,
-			SizeHuman: "500 GB",
-			Type:      "Block Device",
-			Transport: "UNKNOWN",
-			Model:     "Generic Storage",
-			Serial:    "GENERIC",
-		})
+			ByID:      byId,
+			SizeBytes: sizeBytes,
+			SizeHuman: formatSizeHuman(sizeBytes),
+			Type:      storageType,
+			Transport: transport,
+			Model:     model,
+			Serial:    serial,
+		}
+		devices = append(devices, device)
+		slog.InfoContext(ctx, "storage device discovered via /sys/block fallback",
+			"name", device.Name,
+			"by_id", device.ByID,
+			"size", device.SizeHuman,
+			"type", device.Type,
+			"model", device.Model,
+		)
 	}
 	return devices, nil
 }

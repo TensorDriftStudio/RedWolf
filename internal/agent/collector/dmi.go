@@ -86,10 +86,17 @@ func CollectDMI(ctx context.Context) (*DMIInfo, error) {
 		info.Model = boardName
 	}
 
+	uuidRaw := readDMIFile("/sys/class/dmi/id/product_uuid")
+	if uuidRaw == "" {
+		uuidRaw = runDMIDecode(ctx, "-s", "system-uuid")
+	}
+
 	if serialRaw != "" && serialRaw != "0" && !strings.EqualFold(serialRaw, "none") && !strings.EqualFold(serialRaw, "To be filled by O.E.M.") {
 		info.SerialNumber = serialRaw
 	} else if boardSerial != "" && boardSerial != "0" {
 		info.SerialNumber = boardSerial
+	} else if uuidRaw != "" && uuidRaw != "0" && !strings.EqualFold(uuidRaw, "none") && len(uuidRaw) > 8 {
+		info.SerialNumber = uuidRaw
 	}
 
 	if biosRaw != "" {
