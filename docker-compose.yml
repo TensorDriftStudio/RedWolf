@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: redwolf:latest
+    image: wolverandover/redwolf:latest
     container_name: redwolf-core
     restart: unless-stopped
     network_mode: host

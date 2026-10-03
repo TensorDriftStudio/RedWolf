@@ -8,6 +8,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Release-v1.1.0%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/OS%20Targets-AlmaLinux%20%7C%20Debian-orange.svg?style=flat-square" alt="Targets">
@@ -65,20 +66,50 @@ Follow these steps to deploy the RedWolf appliance and provision bare-metal serv
 
 ### Step 1: Deploy the RedWolf Appliance
 
-Clone the repository and spin up the appliance container using Docker Compose. RedWolf uses `network_mode: host` to observe Layer-2 DHCP discovery broadcasts on the provisioning interface:
+RedWolf is published as an official, pre-built production container on Docker Hub ([`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)). RedWolf requires `network_mode: host` (or Macvlan) to observe Layer-2 DHCP discovery broadcasts on the provisioning interface.
 
+#### Method A: Docker Compose (Recommended)
 ```bash
 # 1. Clone the repository
 git clone https://github.com/TensorDriftStudio/RedWolf.git
 cd RedWolf
 
-# 2. Start the RedWolf Core container
+# 2. Pull the official image and start the appliance container
+docker compose pull
 docker compose up -d
 
 # 3. Check service health and verify logs
 docker compose ps
 curl -s http://localhost:8080/healthz
 curl -s http://localhost:8080/api/version
+```
+
+#### Method B: Standalone Docker Run
+To run the pre-built image directly without cloning the repository:
+```bash
+# Pull the latest official appliance image
+docker pull wolverandover/redwolf:latest
+
+# Create host persistent data directories
+mkdir -p data/db data/images data/tftp
+
+# Launch container with host networking & required network capabilities
+docker run -d \
+  --name redwolf-core \
+  --restart unless-stopped \
+  --network host \
+  --cap-add NET_ADMIN \
+  --cap-add NET_BIND_SERVICE \
+  --cap-add NET_RAW \
+  -e REDWOLF_HTTP_PORT=8080 \
+  -e REDWOLF_PROVISIONING_INTERFACE=eth0 \
+  -e REDWOLF_DB_PATH=/var/lib/redwolf/db/redwolf.db \
+  -e REDWOLF_IMAGE_DIR=/var/lib/redwolf/images \
+  -e REDWOLF_TFTP_DIR=/var/lib/redwolf/tftp \
+  -v $(pwd)/data/db:/var/lib/redwolf/db \
+  -v $(pwd)/data/images:/var/lib/redwolf/images \
+  -v $(pwd)/data/tftp:/var/lib/redwolf/tftp \
+  wolverandover/redwolf:latest
 ```
 
 > [!NOTE]
@@ -190,10 +221,19 @@ bash scripts/simulate-node.sh --mode qemu --vendor dell
 
 ## 🐳 Docker Deployment Details
 
-The production appliance container packages all dependencies into a lightweight Alpine image:
+Official pre-built production appliance images are published to Docker Hub:
+* **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
+* **Tags:**
+  * `wolverandover/redwolf:latest` — Tracks the latest stable release
+  * `wolverandover/redwolf:1.1.0` — Immutable release version
+
+The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
 ```bash
-# Build and run the appliance
+# Pull official image from Docker Hub
+docker pull wolverandover/redwolf:latest
+
+# Start the appliance using Docker Compose
 docker compose up -d
 
 # View live container logs
