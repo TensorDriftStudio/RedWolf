@@ -36,6 +36,8 @@ RUN apk update && apk add --no-cache \
     ethtool \
     e2fsprogs \
     xfsprogs \
+    mdadm \
+    lvm2 \
     ca-certificates \
     curl \
     zstd \
