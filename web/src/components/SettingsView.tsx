@@ -1,9 +1,33 @@
-import React, { useState, useEffect } from 'react';
-import type { SystemSettings, DirectoryTestResult, OperatingSystem, CloudInitTemplate, OSImageInfo, VersionInfo } from '../types';
-import { Download, CheckCircle2, HardDrive, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import type { 
+  SystemSettings, 
+  DirectoryTestResult, 
+  OperatingSystem, 
+  CloudInitTemplate, 
+  OSImageInfo, 
+  VersionInfo,
+  User,
+  UserRole
+} from '../types';
+import { 
+  Download, 
+  CheckCircle2, 
+  HardDrive, 
+  RefreshCw, 
+  Loader2,
+  UserPlus,
+  Key,
+  Trash2,
+  Edit2,
+  Shield,
+  AlertTriangle
+} from 'lucide-react';
+
 
 interface SettingsViewProps {
   onBackToFleet?: () => void;
+  activeTab?: 'auth' | 'network' | 'storage' | 'templates';
+  onTabChange?: (tab: 'auth' | 'network' | 'storage' | 'templates') => void;
 }
 
 const defaultLocalSettings: SystemSettings = {
@@ -60,10 +84,16 @@ const defaultLocalSettings: SystemSettings = {
   updatedAt: new Date().toISOString(),
 };
 
-export const SettingsView: React.FC<SettingsViewProps> = () => {
-  const [activeTab, setActiveTab] = useState<'auth' | 'network' | 'storage' | 'templates'>('auth');
+export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalTab, onTabChange }) => {
+  const [internalTab, setInternalTab] = useState<'auth' | 'network' | 'storage' | 'templates'>('auth');
+  const activeTab = externalTab || internalTab;
+  const setActiveTab = (tab: 'auth' | 'network' | 'storage' | 'templates') => {
+    setInternalTab(tab);
+    if (onTabChange) onTabChange(tab);
+  };
   const [settings, setSettings] = useState<SystemSettings>(defaultLocalSettings);
   const [dnsInput, setDnsInput] = useState<string>('1.1.1.1, 8.8.8.8');
+  const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
@@ -140,15 +170,201 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
     }
   };
 
-  // Directory Test State
-  const [isTestingLdap, setIsTestingLdap] = useState<boolean>(false);
-  const [ldapTestResult, setLdapTestResult] = useState<DirectoryTestResult | null>(null);
+  // Unified Directory Test State
+  const [directoryType, setDirectoryType] = useState<'active_directory' | 'ldap'>('active_directory');
+  const [isTestingDirectory, setIsTestingDirectory] = useState<boolean>(false);
+  const [directoryTestResult, setDirectoryTestResult] = useState<DirectoryTestResult | null>(null);
 
-  const [isTestingAD, setIsTestingAD] = useState<boolean>(false);
-  const [adTestResult, setAdTestResult] = useState<DirectoryTestResult | null>(null);
+  // Local User Accounts State
+  const [users, setUsers] = useState<User[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
+  const [userModalMode, setUserModalMode] = useState<'create' | 'edit' | 'password' | 'delete' | null>(null);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [userFormError, setUserFormError] = useState<string | null>(null);
+
+  // Form Fields
+  const [formUsername, setFormUsername] = useState<string>('');
+  const [formDisplayName, setFormDisplayName] = useState<string>('');
+  const [formEmail, setFormEmail] = useState<string>('');
+  const [formRole, setFormRole] = useState<UserRole>('OPERATOR');
+  const [formPassword, setFormPassword] = useState<string>('');
+  const [formConfirmPassword, setFormConfirmPassword] = useState<string>('');
+
+  const loadUsers = useCallback(() => {
+    setIsLoadingUsers(true);
+    fetch('/api/users')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: User[]) => {
+        if (Array.isArray(data)) setUsers(data);
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingUsers(false));
+  }, []);
+
+  useEffect(() => {
+    loadUsers();
+  }, [loadUsers]);
+
+  const handleOpenCreateUser = () => {
+    setFormUsername('');
+    setFormDisplayName('');
+    setFormEmail('');
+    setFormRole('OPERATOR');
+    setFormPassword('');
+    setFormConfirmPassword('');
+    setUserFormError(null);
+    setUserModalMode('create');
+  };
+
+  const handleOpenEditUser = (u: User) => {
+    setSelectedUser(u);
+    setFormUsername(u.username);
+    setFormDisplayName(u.displayName || u.username);
+    setFormEmail(u.email || '');
+    setFormRole(u.role);
+    setUserFormError(null);
+    setUserModalMode('edit');
+  };
+
+  const handleOpenPasswordUser = (u: User) => {
+    setSelectedUser(u);
+    setFormPassword('');
+    setFormConfirmPassword('');
+    setUserFormError(null);
+    setUserModalMode('password');
+  };
+
+  const handleOpenDeleteUser = (u: User) => {
+    setSelectedUser(u);
+    setUserFormError(null);
+    setUserModalMode('delete');
+  };
+
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUserFormError(null);
+    if (!formUsername.trim()) {
+      setUserFormError('Username is required.');
+      return;
+    }
+    if (formPassword.length < 8) {
+      setUserFormError('Password must be at least 8 characters long.');
+      return;
+    }
+    if (formPassword !== formConfirmPassword) {
+      setUserFormError('Passwords do not match.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: formUsername.trim(),
+          displayName: formDisplayName.trim() || formUsername.trim(),
+          email: formEmail.trim(),
+          role: formRole,
+          password: formPassword,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to create user' }));
+        throw new Error(err.error || 'Failed to create user');
+      }
+
+      setUserModalMode(null);
+      loadUsers();
+    } catch (err: unknown) {
+      setUserFormError(err instanceof Error ? err.message : 'Failed to create user');
+    }
+  };
+
+  const handleEditUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setUserFormError(null);
+
+    try {
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          displayName: formDisplayName.trim() || selectedUser.username,
+          email: formEmail.trim(),
+          role: formRole,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to update user' }));
+        throw new Error(err.error || 'Failed to update user');
+      }
+
+      setUserModalMode(null);
+      loadUsers();
+    } catch (err: unknown) {
+      setUserFormError(err instanceof Error ? err.message : 'Failed to update user');
+    }
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setUserFormError(null);
+
+    if (formPassword.length < 8) {
+      setUserFormError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (formPassword !== formConfirmPassword) {
+      setUserFormError('Passwords do not match.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/users/${selectedUser.id}/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword: formPassword }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to change password' }));
+        throw new Error(err.error || 'Failed to change password');
+      }
+
+      setUserModalMode(null);
+    } catch (err: unknown) {
+      setUserFormError(err instanceof Error ? err.message : 'Failed to change password');
+    }
+  };
+
+  const handleDeleteUserSubmit = async () => {
+    if (!selectedUser) return;
+    setUserFormError(null);
+
+    try {
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to delete user' }));
+        throw new Error(err.error || 'Failed to delete user');
+      }
+
+      setUserModalMode(null);
+      loadUsers();
+    } catch (err: unknown) {
+      setUserFormError(err instanceof Error ? err.message : 'Failed to delete user');
+    }
+  };
 
   // Load existing settings from API if available
   useEffect(() => {
+    setIsLoadingSettings(true);
     fetch('/api/settings')
       .then((res) => {
         if (res.ok) return res.json();
@@ -159,9 +375,17 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
         if (data.network?.dnsServers) {
           setDnsInput(data.network.dnsServers.join(', '));
         }
+        if (data.auth?.ldap?.enabled && !data.auth?.activeDirectory?.enabled) {
+          setDirectoryType('ldap');
+        } else {
+          setDirectoryType('active_directory');
+        }
       })
       .catch(() => {
         // Fall back to default local settings
+      })
+      .finally(() => {
+        setIsLoadingSettings(false);
       });
   }, []);
 
@@ -198,104 +422,76 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
     }
   };
 
-  const handleTestLDAP = async () => {
-    setIsTestingLdap(true);
-    setLdapTestResult(null);
+  const handleTestDirectory = async () => {
+    setIsTestingDirectory(true);
+    setDirectoryTestResult(null);
     try {
       const res = await fetch('/api/settings/test-directory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          source: 'LDAP',
+          source: directoryType === 'active_directory' ? 'ACTIVE_DIRECTORY' : 'LDAP',
           ldap: settings.auth.ldap,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setLdapTestResult(data);
-      } else {
-        throw new Error('Server returned error');
-      }
-    } catch {
-      setLdapTestResult({
-        success: false,
-        latencyMs: 12,
-        message: 'Could not connect to configured LDAP server. Check host reachability and firewall port 389.',
-        entriesFound: 0,
-        testedAt: new Date().toISOString(),
-      });
-    } finally {
-      setIsTestingLdap(false);
-    }
-  };
-
-  const handleTestAD = async () => {
-    setIsTestingAD(true);
-    setAdTestResult(null);
-    try {
-      const res = await fetch('/api/settings/test-directory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source: 'ACTIVE_DIRECTORY',
           activeDirectory: settings.auth.activeDirectory,
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setAdTestResult(data);
+        setDirectoryTestResult(data);
       } else {
         throw new Error('Server returned error');
       }
     } catch {
-      setAdTestResult({
+      setDirectoryTestResult({
         success: false,
-        latencyMs: 18,
-        message: 'Could not connect to Active Directory Domain Controller. Verify DNS and LDAPS port 636.',
+        latencyMs: 15,
+        message: directoryType === 'active_directory'
+          ? 'Could not connect to Active Directory Domain Controller. Verify DNS and LDAPS port 636.'
+          : 'Could not connect to configured LDAP server. Check host reachability and firewall port 389.',
         entriesFound: 0,
         testedAt: new Date().toISOString(),
       });
     } finally {
-      setIsTestingAD(false);
+      setIsTestingDirectory(false);
     }
   };
 
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto">
+    <div className="space-y-4 max-w-6xl mx-auto">
       {/* Title & Save Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-4">
-        <div>
-          <div className="flex items-center gap-3">
-            <h2 className="text-xl font-bold tracking-tight text-slate-100 uppercase">
-              Appliance Settings & Directory Services
-            </h2>
-            <span className="font-mono text-[11px] font-semibold text-red-400 bg-red-950/70 border border-red-800/80 px-2 py-0.5 rounded">
-              {versionInfo?.version || 'v1.1.0'} Enterprise
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[#212836] gap-3">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-base font-bold text-white">
+            Settings
+          </h2>
+          <span className="font-mono text-[10px] text-slate-400 bg-[#151b24] border border-[#212836] px-1.5 py-0.2 rounded">
+            {versionInfo?.version || 'v1.1.0'}
+          </span>
+          {versionInfo && (
+            <span className="hidden md:inline text-slate-500 font-mono text-[10px]">
+              {versionInfo.platform}
             </span>
-          </div>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Configure authentication providers, LDAP / Active Directory synchronization, and PXE engine parameters.
-            {versionInfo && (
-              <span className="hidden md:inline ml-2 text-slate-500 font-mono text-[10px]">
-                [{versionInfo.platform} • Commit {versionInfo.gitCommit}]
-              </span>
-            )}
-          </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
+          {isLoadingSettings && (
+            <span className="text-xs text-slate-400 flex items-center gap-1.5 font-medium">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-redwolf-primary" />
+              Syncing...
+            </span>
+          )}
           {saveSuccess && (
             <span className="text-xs text-emerald-400 flex items-center gap-1.5 font-medium">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-              Settings Saved Successfully
+              <CheckCircle2 className="w-4 h-4" />
+              Settings Saved
             </span>
           )}
           <button
             type="button"
             onClick={handleSave}
-            disabled={isSaving}
-            className="py-2 px-4 bg-red-700 hover:bg-red-600 disabled:bg-slate-800 text-white font-medium text-xs rounded-sm transition-colors flex items-center gap-2 shadow-sm"
+            disabled={isSaving || isLoadingSettings}
+            className="py-1.5 px-3.5 bg-redwolf-primary hover:bg-redwolf-hover disabled:bg-slate-800 text-white font-medium text-xs rounded-sm transition-colors flex items-center gap-2 shadow-sm"
           >
             {isSaving ? 'Saving...' : 'Save Configuration'}
           </button>
@@ -303,584 +499,1130 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex border-b border-slate-800 gap-2">
+      <div className="flex border-b border-[#212836] gap-1 text-xs">
         <button
           type="button"
           onClick={() => setActiveTab('auth')}
-          className={`py-2 px-4 text-xs font-semibold tracking-wider uppercase border-b-2 transition-colors ${
+          className={`py-2 px-3 font-medium border-b-2 transition-colors ${
             activeTab === 'auth'
-              ? 'border-red-600 text-red-500 bg-slate-900/40'
+              ? 'border-redwolf-primary text-white bg-[#151b24]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Authentication & Directory Services
+          Authentication
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('network')}
-          className={`py-2 px-4 text-xs font-semibold tracking-wider uppercase border-b-2 transition-colors ${
+          className={`py-2 px-3 font-medium border-b-2 transition-colors ${
             activeTab === 'network'
-              ? 'border-red-600 text-red-500 bg-slate-900/40'
+              ? 'border-redwolf-primary text-white bg-[#151b24]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          PXE Engine & Network
+          Network & DHCP
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('storage')}
-          className={`py-2 px-4 text-xs font-semibold tracking-wider uppercase border-b-2 transition-colors ${
+          className={`py-2 px-3 font-medium border-b-2 transition-colors ${
             activeTab === 'storage'
-              ? 'border-red-600 text-red-500 bg-slate-900/40'
+              ? 'border-redwolf-primary text-white bg-[#151b24]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Distribution Mirror & Cache
+          OS Images & Storage
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('templates')}
-          className={`py-2 px-4 text-xs font-semibold tracking-wider uppercase border-b-2 transition-colors ${
+          className={`py-2 px-3 font-medium border-b-2 transition-colors ${
             activeTab === 'templates'
-              ? 'border-red-600 text-red-500 bg-slate-900/40'
+              ? 'border-redwolf-primary text-white bg-[#151b24]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Cloud-Init Templates ({templates.length})
+          Templates ({templates.length})
         </button>
       </div>
 
       {/* Tab 1: Authentication & Directory Services */}
       {activeTab === 'auth' && (
         <div className="space-y-6">
-          {/* Local Authentication Card */}
-          <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          {/* Local Authentication & Operator Accounts Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800 gap-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-                  Local Database Authentication
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Built-in emergency appliance administrator credentials stored directly in SQLite.
+                <div className="flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-red-500" />
+                  <h3 className="text-xs font-semibold text-slate-200">
+                    Local Authentication & Operator Accounts
+                  </h3>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Manage local database operator identities, roles, and administrative passwords.
                 </p>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.auth.localAuthEnabled}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: { ...settings.auth, localAuthEnabled: e.target.checked },
-                    })
-                  }
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
-              </label>
+
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={handleOpenCreateUser}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-sm bg-redwolf-primary hover:bg-redwolf-hover text-white transition-colors shadow-sm"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Add Operator</span>
+                </button>
+
+                <div className="flex items-center gap-2 pl-3 border-l border-slate-800">
+                  <span className="text-[11px] text-slate-400">Local Auth:</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.auth.localAuthEnabled}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: { ...settings.auth, localAuthEnabled: e.target.checked },
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
+                  </label>
+                </div>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-300">
-              <div>
-                <span className="font-semibold text-slate-400">Default Superuser:</span>
-                <span className="ml-2 font-mono text-slate-200">admin</span>
-              </div>
-              <div>
-                <span className="font-semibold text-slate-400">Access Scope:</span>
-                <span className="ml-2 px-1.5 py-0.5 bg-red-950/80 border border-red-800 text-red-300 rounded text-[11px] font-mono">
-                  Full Appliance Root
-                </span>
-              </div>
+            {/* Users Table */}
+            <div className="overflow-x-auto border border-slate-800 rounded-sm">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#121620] text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2 px-3 font-semibold">User</th>
+                    <th className="py-2 px-3 font-semibold">Role</th>
+                    <th className="py-2 px-3 font-semibold">Email</th>
+                    <th className="py-2 px-3 font-semibold">Created</th>
+                    <th className="py-2 px-3 font-semibold">Last Login</th>
+                    <th className="py-2 px-3 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+                  {isLoadingUsers ? (
+                    <tr>
+                      <td colSpan={6} className="py-6 text-center text-slate-500">
+                        <div className="flex items-center justify-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin text-redwolf-primary" />
+                          <span>Loading operator accounts...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : users.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-6 text-center text-slate-500">
+                        No local users configured. Click "Add Operator" above to provision accounts.
+                      </td>
+                    </tr>
+                  ) : (
+                    users.map((u) => (
+                      <tr key={u.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-200">{u.displayName || u.username}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">@{u.username}</div>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                              u.role === 'ADMIN'
+                                ? 'bg-red-950/80 border-red-800 text-red-300'
+                                : u.role === 'OPERATOR'
+                                ? 'bg-amber-950/80 border-amber-800 text-amber-300'
+                                : 'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}
+                          >
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400 truncate max-w-xs">
+                          {u.email || '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400">
+                          {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400">
+                          {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : 'Never'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <div className="flex items-center justify-end gap-1 font-sans">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPasswordUser(u)}
+                              title="Change Password"
+                              className="p-1 rounded text-slate-400 hover:text-amber-400 hover:bg-slate-800 transition-colors"
+                            >
+                              <Key className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditUser(u)}
+                              title="Edit User"
+                              className="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenDeleteUser(u)}
+                              title="Delete User"
+                              className="p-1 rounded text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
-          {/* OpenLDAP / FreeIPA Card */}
+          {/* Unified Enterprise Directory Services (LDAP / Active Directory) Card */}
           <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded bg-blue-950/60 border border-blue-800/60 flex items-center justify-center text-blue-400 font-bold text-xs">
-                  LDAP
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-                    Enterprise OpenLDAP / FreeIPA Integration
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Authenticate operators via standards-compliant LDAP directories (RFC 4511 / POSIX schema).
-                  </p>
-                </div>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.auth.ldap.enabled}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, enabled: e.target.checked },
-                      },
-                    })
-                  }
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
-              </label>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">LDAP Server Host</label>
-                <input
-                  type="text"
-                  value={settings.auth.ldap.host}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, host: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="ldap.corp.example.com"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Port</label>
-                <input
-                  type="number"
-                  value={settings.auth.ldap.port}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, port: parseInt(e.target.value, 10) || 389 },
-                      },
-                    })
-                  }
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Security / Transport</label>
-                <select
-                  value={settings.auth.ldap.useTls ? 'ldaps' : settings.auth.ldap.startTls ? 'starttls' : 'plain'}
-                  onChange={(e) => {
-                    const mode = e.target.value;
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: {
-                          ...settings.auth.ldap,
-                          useTls: mode === 'ldaps',
-                          startTls: mode === 'starttls',
-                        },
-                      },
-                    });
-                  }}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                >
-                  <option value="starttls">StartTLS (Port 389 - Recommended)</option>
-                  <option value="ldaps">LDAPS (Port 636)</option>
-                  <option value="plain">Plain LDAP (Insecure)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Bind DN</label>
-                <input
-                  type="text"
-                  value={settings.auth.ldap.bindDn}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, bindDn: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="cn=readonly,dc=corp,dc=example,dc=com"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Password</label>
-                <input
-                  type="password"
-                  value={settings.auth.ldap.bindPassword || ''}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, bindPassword: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="••••••••••••"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Base DN</label>
-                <input
-                  type="text"
-                  value={settings.auth.ldap.baseDn}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, baseDn: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="dc=corp,dc=example,dc=com"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block text-xs font-medium text-slate-300 mb-1">User Search Filter</label>
-                <input
-                  type="text"
-                  value={settings.auth.ldap.userFilter}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, userFilter: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="(&(objectClass=posixAccount)(uid=%s))"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Admin Group DN</label>
-                <input
-                  type="text"
-                  value={settings.auth.ldap.adminGroupDn}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        ldap: { ...settings.auth.ldap, adminGroupDn: e.target.value },
-                      },
-                    })
-                  }
-                  placeholder="cn=RedWolf-Admins,ou=Groups,dc=corp..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-            </div>
-
-            {/* Test LDAP Button & Result */}
-            <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-t border-slate-800/80">
-              <button
-                type="button"
-                onClick={handleTestLDAP}
-                disabled={isTestingLdap}
-                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-sm transition-colors flex items-center gap-2"
-              >
-                {isTestingLdap ? (
-                  <>
-                    <svg className="animate-spin h-3.5 w-3.5 text-slate-300" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    <span>Testing Connection...</span>
-                  </>
-                ) : (
-                  <span>Test LDAP Connection & Search</span>
-                )}
-              </button>
-
-              {ldapTestResult && (
-                <div
-                  className={`text-xs px-3 py-1.5 rounded border flex items-center gap-2 ${
-                    ldapTestResult.success
-                      ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300'
-                      : 'bg-red-950/60 border-red-800 text-red-300'
-                  }`}
-                >
-                  <span className="font-semibold">{ldapTestResult.success ? 'Success' : 'Failed'}</span>
-                  <span>({ldapTestResult.latencyMs} ms)</span>
-                  <span>— {ldapTestResult.message}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Microsoft Active Directory Card */}
-          <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800 gap-3">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded bg-cyan-950/60 border border-cyan-800/60 flex items-center justify-center text-cyan-400 font-bold text-xs">
-                  AD
+                  DIR
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-                    Microsoft Active Directory Integration
+                  <h3 className="text-xs font-semibold text-slate-200">
+                    Enterprise Directory Services (LDAP / Active Directory)
                   </h3>
-                  <p className="text-xs text-slate-400">
-                    Single sign-on via Windows Server AD DS (sAMAccountName, UserPrincipalName, Kerberos / LDAPS).
+                  <p className="text-[11px] text-slate-400">
+                    Authenticate data center operators against Microsoft Active Directory (LDAPS) or RFC 4511 OpenLDAP / FreeIPA.
                   </p>
                 </div>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.auth.activeDirectory.enabled}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          enabled: e.target.checked,
-                        },
-                      },
-                    })
-                  }
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
-              </label>
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">AD Domain Name</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.domain}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          domain: e.target.value,
+              {/* Master Directory Switch */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-400">Directory Auth:</span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.auth.activeDirectory.enabled || settings.auth.ldap.enabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setSettings({
+                        ...settings,
+                        auth: {
+                          ...settings.auth,
+                          activeDirectory: {
+                            ...settings.auth.activeDirectory,
+                            enabled: enabled && directoryType === 'active_directory',
+                          },
+                          ldap: {
+                            ...settings.auth.ldap,
+                            enabled: enabled && directoryType === 'ldap',
+                          },
                         },
-                      },
-                    })
-                  }
-                  placeholder="corp.enterprise.internal"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Domain Controller FQDN</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.domainController}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          domainController: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="dc01.corp.enterprise.internal"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Port & Protocol</label>
-                <select
-                  value={settings.auth.activeDirectory.useLdaps ? '636' : '389'}
-                  onChange={(e) => {
-                    const is636 = e.target.value === '636';
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          port: is636 ? 636 : 389,
-                          useLdaps: is636,
-                        },
-                      },
-                    });
-                  }}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                >
-                  <option value="636">LDAPS over SSL (Port 636 - Recommended)</option>
-                  <option value="389">LDAP Standard (Port 389)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Bind User (UPN)</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.bindDn}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          bindDn: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="svc-redwolf@corp.enterprise.internal"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Bind Password</label>
-                <input
-                  type="password"
-                  value={settings.auth.activeDirectory.bindPassword || ''}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          bindPassword: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="••••••••••••"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Base Search DN</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.baseDn}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          baseDn: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="DC=corp,DC=enterprise,DC=internal"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Admin Security Group</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.adminGroup}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          adminGroup: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="Domain Admins"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Operator Security Group</label>
-                <input
-                  type="text"
-                  value={settings.auth.activeDirectory.operatorGroup}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      auth: {
-                        ...settings.auth,
-                        activeDirectory: {
-                          ...settings.auth.activeDirectory,
-                          operatorGroup: e.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder="Server Operators"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-                />
+                      });
+                    }}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
+                </label>
               </div>
             </div>
 
-            {/* Test AD Button & Result */}
-            <div className="pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-t border-slate-800/80">
+            {/* Provider Type Selector Pills */}
+            <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3">
+              <span className="text-xs font-medium text-slate-400 mr-2">Provider Type:</span>
               <button
                 type="button"
-                onClick={handleTestAD}
-                disabled={isTestingAD}
-                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-sm transition-colors flex items-center gap-2"
+                onClick={() => {
+                  setDirectoryType('active_directory');
+                  const currentlyActive = settings.auth.activeDirectory.enabled || settings.auth.ldap.enabled;
+                  if (currentlyActive) {
+                    setSettings({
+                      ...settings,
+                      auth: {
+                        ...settings.auth,
+                        activeDirectory: { ...settings.auth.activeDirectory, enabled: true },
+                        ldap: { ...settings.auth.ldap, enabled: false },
+                      },
+                    });
+                  }
+                }}
+                className={`py-1 px-3 text-xs rounded-sm font-medium transition-colors border ${
+                  directoryType === 'active_directory'
+                    ? 'bg-cyan-950/70 border-cyan-700 text-cyan-200'
+                    : 'bg-[#151b24] border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
               >
-                {isTestingAD ? (
+                Microsoft Active Directory (LDAPS)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setDirectoryType('ldap');
+                  const currentlyActive = settings.auth.activeDirectory.enabled || settings.auth.ldap.enabled;
+                  if (currentlyActive) {
+                    setSettings({
+                      ...settings,
+                      auth: {
+                        ...settings.auth,
+                        activeDirectory: { ...settings.auth.activeDirectory, enabled: false },
+                        ldap: { ...settings.auth.ldap, enabled: true },
+                      },
+                    });
+                  }
+                }}
+                className={`py-1 px-3 text-xs rounded-sm font-medium transition-colors border ${
+                  directoryType === 'ldap'
+                    ? 'bg-blue-950/70 border-blue-700 text-blue-200'
+                    : 'bg-[#151b24] border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                OpenLDAP / FreeIPA (RFC 4511)
+              </button>
+            </div>
+
+            {/* Active Directory Configuration Fields */}
+            {directoryType === 'active_directory' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Domain Controller Host</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.domainController}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              domainController: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="dc01.corp.redwolf.internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Active Directory Domain</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.domain}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              domain: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="corp.redwolf.internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">LDAPS Port</label>
+                    <input
+                      type="number"
+                      value={settings.auth.activeDirectory.port}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              port: parseInt(e.target.value, 10) || 636,
+                            },
+                          },
+                        })
+                      }
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Bind DN / UPN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.bindDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              bindDn: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="svc-redwolf@corp.redwolf.internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Password</label>
+                    <input
+                      type="password"
+                      value={settings.auth.activeDirectory.bindPassword || ''}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              bindPassword: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="••••••••••••"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Base Search DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.baseDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              baseDn: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="DC=corp,DC=redwolf,DC=internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">User Search Filter</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.userSearchFilter}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              userSearchFilter: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="(&(objectClass=user)(|(sAMAccountName=%s)(userPrincipalName=%s)))"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Administrator Security Group</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.adminGroup}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              adminGroup: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="CN=Domain Admins,CN=Users,DC=corp,DC=redwolf,DC=internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Operator Security Group</label>
+                    <input
+                      type="text"
+                      value={settings.auth.activeDirectory.operatorGroup}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            activeDirectory: {
+                              ...settings.auth.activeDirectory,
+                              operatorGroup: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      placeholder="CN=Server Operators,CN=Builtin,DC=corp,DC=redwolf,DC=internal"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="ad-skip-verify"
+                    checked={settings.auth.activeDirectory.insecureSkipVerify}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        auth: {
+                          ...settings.auth,
+                          activeDirectory: {
+                            ...settings.auth.activeDirectory,
+                            insecureSkipVerify: e.target.checked,
+                          },
+                        },
+                      })
+                    }
+                    className="rounded bg-slate-800 border-slate-700 text-red-600 focus:ring-0"
+                  />
+                  <label htmlFor="ad-skip-verify" className="text-xs text-slate-400">
+                    Skip TLS Certificate Verification (Allow self-signed Active Directory CA certificates)
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* OpenLDAP Configuration Fields */}
+            {directoryType === 'ldap' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">LDAP Server Host</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.host}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, host: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="ldap.corp.example.com"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Port</label>
+                    <input
+                      type="number"
+                      value={settings.auth.ldap.port}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, port: parseInt(e.target.value, 10) || 389 },
+                          },
+                        })
+                      }
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Security Mode</label>
+                    <select
+                      value={settings.auth.ldap.useTls ? 'ldaps' : settings.auth.ldap.startTls ? 'starttls' : 'plain'}
+                      onChange={(e) => {
+                        const mode = e.target.value;
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: {
+                              ...settings.auth.ldap,
+                              useTls: mode === 'ldaps',
+                              startTls: mode === 'starttls',
+                              port: mode === 'ldaps' ? 636 : 389,
+                            },
+                          },
+                        });
+                      }}
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    >
+                      <option value="starttls">StartTLS (Port 389 - Recommended)</option>
+                      <option value="ldaps">LDAPS (Port 636)</option>
+                      <option value="plain">Plain LDAP (Insecure)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Bind DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.bindDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, bindDn: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="cn=readonly,dc=corp,dc=example,dc=com"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Service Account Password</label>
+                    <input
+                      type="password"
+                      value={settings.auth.ldap.bindPassword || ''}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, bindPassword: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="••••••••••••"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Base Search DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.baseDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, baseDn: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="dc=corp,dc=example,dc=com"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">User Search Filter</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.userFilter}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, userFilter: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="(&(objectClass=posixAccount)(uid=%s))"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Group Search Base DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.groupSearchDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, groupSearchDn: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="ou=Groups,dc=corp,dc=example,dc=com"
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Admin Group DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.adminGroupDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, adminGroupDn: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="cn=RedWolf-Admins,ou=Groups,dc=..."
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Operator Group DN</label>
+                    <input
+                      type="text"
+                      value={settings.auth.ldap.operatorGroupDn}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          auth: {
+                            ...settings.auth,
+                            ldap: { ...settings.auth.ldap, operatorGroupDn: e.target.value },
+                          },
+                        })
+                      }
+                      placeholder="cn=RedWolf-Operators,ou=Groups,dc=..."
+                      className="w-full bg-[#0c0e14] border border-slate-800 rounded px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="ldap-skip-verify"
+                    checked={settings.auth.ldap.insecureSkipVerify}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        auth: {
+                          ...settings.auth,
+                          ldap: {
+                            ...settings.auth.ldap,
+                            insecureSkipVerify: e.target.checked,
+                          },
+                        },
+                      })
+                    }
+                    className="rounded bg-slate-800 border-slate-700 text-red-600 focus:ring-0"
+                  />
+                  <label htmlFor="ldap-skip-verify" className="text-xs text-slate-400">
+                    Skip TLS Certificate Verification (Allow self-signed LDAP server certificates)
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Test Connection Button & Result Banner */}
+            <div className="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center gap-3">
+              <button
+                type="button"
+                onClick={handleTestDirectory}
+                disabled={isTestingDirectory}
+                className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs rounded transition-colors flex items-center justify-center gap-2 border border-slate-700 disabled:opacity-50"
+              >
+                {isTestingDirectory ? (
                   <>
-                    <svg className="animate-spin h-3.5 w-3.5 text-slate-300" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    <span>Testing Active Directory...</span>
+                    <Loader2 className="animate-spin h-3.5 w-3.5 text-slate-300" />
+                    <span>Testing Directory Connection...</span>
                   </>
                 ) : (
-                  <span>Test Active Directory Connection</span>
+                  <span>Test Directory Connection ({directoryType === 'active_directory' ? 'Active Directory' : 'OpenLDAP'})</span>
                 )}
               </button>
 
-              {adTestResult && (
+              {directoryTestResult && (
                 <div
                   className={`text-xs px-3 py-1.5 rounded border flex items-center gap-2 ${
-                    adTestResult.success
+                    directoryTestResult.success
                       ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300'
                       : 'bg-red-950/60 border-red-800 text-red-300'
                   }`}
                 >
-                  <span className="font-semibold">{adTestResult.success ? 'Success' : 'Failed'}</span>
-                  <span>({adTestResult.latencyMs} ms)</span>
-                  <span>— {adTestResult.message}</span>
+                  <span className="font-semibold">{directoryTestResult.success ? 'Success' : 'Failed'}</span>
+                  <span>({directoryTestResult.latencyMs} ms)</span>
+                  <span>— {directoryTestResult.message}</span>
                 </div>
               )}
             </div>
           </div>
+
+          {/* User Management Modals */}
+
+          {/* Create User Modal */}
+          {userModalMode === 'create' && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+              <div className="bg-[#121620] border border-[#232b3b] shadow-2xl rounded-sm w-full max-w-md p-5 space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <UserPlus className="w-4 h-4 text-red-500" />
+                    <h4 className="text-xs font-semibold text-slate-200">Create Local Operator</h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUserModalMode(null)}
+                    className="text-slate-400 hover:text-white text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {userFormError && (
+                  <div className="p-2.5 bg-red-950/60 border border-red-800 text-red-300 text-xs rounded-sm">
+                    {userFormError}
+                  </div>
+                )}
+
+                <form onSubmit={handleCreateUserSubmit} className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Username <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={formUsername}
+                      onChange={(e) => setFormUsername(e.target.value)}
+                      placeholder="e.g. jdoe"
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Display Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formDisplayName}
+                      onChange={(e) => setFormDisplayName(e.target.value)}
+                      placeholder="e.g. John Doe"
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      value={formEmail}
+                      onChange={(e) => setFormEmail(e.target.value)}
+                      placeholder="operator@datacenter.net"
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Access Role <span className="text-red-400">*</span>
+                    </label>
+                    <select
+                      value={formRole}
+                      onChange={(e) => setFormRole(e.target.value as UserRole)}
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    >
+                      <option value="ADMIN">ADMIN — Full root appliance privileges</option>
+                      <option value="OPERATOR">OPERATOR — Provisioning, power actions & node inspection</option>
+                      <option value="VIEWER">VIEWER — Read-only hardware telemetry inspection</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                        Password <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="password"
+                        value={formPassword}
+                        onChange={(e) => setFormPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                        Confirm Password <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="password"
+                        value={formConfirmPassword}
+                        onChange={(e) => setFormConfirmPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setUserModalMode(null)}
+                      className="px-3 py-1.5 text-xs rounded-sm bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 text-xs rounded-sm bg-redwolf-primary hover:bg-redwolf-hover text-white font-medium transition-colors"
+                    >
+                      Create Account
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Edit User Modal */}
+          {userModalMode === 'edit' && selectedUser && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+              <div className="bg-[#121620] border border-[#232b3b] shadow-2xl rounded-sm w-full max-w-md p-5 space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Edit2 className="w-4 h-4 text-slate-300" />
+                    <h4 className="text-xs font-semibold text-slate-200">
+                      Edit User: @{selectedUser.username}
+                    </h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUserModalMode(null)}
+                    className="text-slate-400 hover:text-white text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {userFormError && (
+                  <div className="p-2.5 bg-red-950/60 border border-red-800 text-red-300 text-xs rounded-sm">
+                    {userFormError}
+                  </div>
+                )}
+
+                <form onSubmit={handleEditUserSubmit} className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Display Name
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={formDisplayName}
+                      onChange={(e) => setFormDisplayName(e.target.value)}
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      value={formEmail}
+                      onChange={(e) => setFormEmail(e.target.value)}
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Access Role
+                    </label>
+                    <select
+                      value={formRole}
+                      onChange={(e) => setFormRole(e.target.value as UserRole)}
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600"
+                    >
+                      <option value="ADMIN">ADMIN — Full root appliance privileges</option>
+                      <option value="OPERATOR">OPERATOR — Provisioning, power actions & node inspection</option>
+                      <option value="VIEWER">VIEWER — Read-only hardware telemetry inspection</option>
+                    </select>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setUserModalMode(null)}
+                      className="px-3 py-1.5 text-xs rounded-sm bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 text-xs rounded-sm bg-redwolf-primary hover:bg-redwolf-hover text-white font-medium transition-colors"
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Change Password Modal */}
+          {userModalMode === 'password' && selectedUser && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+              <div className="bg-[#121620] border border-[#232b3b] shadow-2xl rounded-sm w-full max-w-sm p-5 space-y-4">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Key className="w-4 h-4 text-amber-400" />
+                    <h4 className="text-xs font-semibold text-slate-200">
+                      Reset Password: @{selectedUser.username}
+                    </h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUserModalMode(null)}
+                    className="text-slate-400 hover:text-white text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {userFormError && (
+                  <div className="p-2.5 bg-red-950/60 border border-red-800 text-red-300 text-xs rounded-sm">
+                    {userFormError}
+                  </div>
+                )}
+
+                <form onSubmit={handleChangePasswordSubmit} className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      New Password (min 8 characters)
+                    </label>
+                    <input
+                      type="password"
+                      autoFocus
+                      value={formPassword}
+                      onChange={(e) => setFormPassword(e.target.value)}
+                      placeholder="••••••••••••"
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                      Confirm New Password
+                    </label>
+                    <input
+                      type="password"
+                      value={formConfirmPassword}
+                      onChange={(e) => setFormConfirmPassword(e.target.value)}
+                      placeholder="••••••••••••"
+                      className="w-full bg-[#0c0e14] border border-[#232b3b] rounded-sm px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-600 font-mono"
+                    />
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setUserModalMode(null)}
+                      className="px-3 py-1.5 text-xs rounded-sm bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 text-xs rounded-sm bg-redwolf-primary hover:bg-redwolf-hover text-white font-medium transition-colors"
+                    >
+                      Update Password
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Delete User Confirmation Modal */}
+          {userModalMode === 'delete' && selectedUser && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+              <div className="bg-[#121620] border border-[#232b3b] shadow-2xl rounded-sm w-full max-w-sm p-5 space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-800 text-red-400">
+                  <AlertTriangle className="w-4 h-4" />
+                  <h4 className="text-xs font-semibold text-slate-200">
+                    Delete Operator Account
+                  </h4>
+                </div>
+
+                {userFormError && (
+                  <div className="p-2.5 bg-red-950/60 border border-red-800 text-red-300 text-xs rounded-sm">
+                    {userFormError}
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Are you sure you want to permanently delete operator account{' '}
+                  <span className="font-semibold text-white font-mono">@{selectedUser.username}</span>? This action cannot be reversed.
+                </p>
+
+                <div className="pt-2 border-t border-slate-800 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setUserModalMode(null)}
+                    className="px-3 py-1.5 text-xs rounded-sm bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteUserSubmit}
+                    className="px-3 py-1.5 text-xs rounded-sm bg-red-700 hover:bg-red-600 text-white font-medium transition-colors"
+                  >
+                    Confirm Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -888,12 +1630,9 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
       {activeTab === 'network' && (
         <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
           <div className="pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
+            <h3 className="text-xs font-semibold text-slate-200">
               PXE Engine & DHCP Subnet Parameters
             </h3>
-            <p className="text-xs text-slate-400">
-              Layer-2 broadcast configuration managed by the embedded dnsmasq daemon.
-            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -989,12 +1728,9 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
       {activeTab === 'storage' && (
         <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
           <div className="pb-3 border-b border-slate-800">
-            <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider">
-              OS Distribution Images & Storage Volumes
+            <h3 className="text-xs font-semibold text-slate-200">
+              OS Distribution Images & Storage
             </h3>
-            <p className="text-xs text-slate-400">
-              Sparse image streaming cache and persistent storage root paths.
-            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1148,10 +1884,7 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
         <div className="space-y-6">
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
             <div>
-              <h3 className="text-sm font-bold text-white uppercase tracking-wider">Cloud-Init Provisioning Templates</h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Reusable cloud-config user-data recipes selectable during bare-metal deployment.
-              </p>
+              <h3 className="text-xs font-semibold text-white">Cloud-Init Templates</h3>
             </div>
             <button
               type="button"
@@ -1376,8 +2109,9 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
                         }
                         setIsTemplateModalOpen(false);
                         loadTemplates();
-                      } catch (err: any) {
-                        setTemplateFormError(err.message || 'Network error');
+                      } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : 'Network error';
+                        setTemplateFormError(msg);
                       }
                     }}
                     className="py-1.5 px-4 bg-red-700 hover:bg-red-600 text-white text-xs font-medium rounded transition-colors"

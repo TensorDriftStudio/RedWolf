@@ -18,6 +18,7 @@ type BMCEscrowService struct {
 	vaultKey  string
 	repo      port.NodeRepository
 	events    port.EventBroadcaster
+	bmcMgr    *BMCManager
 }
 
 // NewBMCEscrowService creates an initialized BMC escrow service.
@@ -32,6 +33,11 @@ func NewBMCEscrowService(db *sql.DB, vaultKey string, repo port.NodeRepository, 
 	return svc
 }
 
+// SetBMCManager associates the BMC manager for direct hardware synchronization.
+func (s *BMCEscrowService) SetBMCManager(mgr *BMCManager) {
+	s.bmcMgr = mgr
+}
+
 func (s *BMCEscrowService) initSchema() {
 	if s.db == nil {
 		return
@@ -42,7 +48,7 @@ func (s *BMCEscrowService) initSchema() {
 		encrypted_password TEXT NOT NULL,
 		user_slot INTEGER NOT NULL,
 		updated_at TIMESTAMP NOT NULL,
-		FOREIGN KEY (node_id) REFERENCES server_nodes(id) ON DELETE CASCADE
+		FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 	);`
 	_, _ = s.db.Exec(query)
 }
@@ -94,6 +100,22 @@ func (s *BMCEscrowService) RotateCredentials(ctx context.Context, nodeID string,
 		_, err := s.db.ExecContext(ctx, query, cred.NodeID, cred.Username, cred.EncryptedPassword, cred.UserSlot, cred.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed persisting encrypted credentials: %w", err)
+		}
+	}
+
+	// Attempt live synchronization with physical BMC hardware if reachable
+	if s.bmcMgr != nil && node.BMC.IP != "" && node.BMC.IP != "0.0.0.0" {
+		if err := s.bmcMgr.SynchronizeCredentials(ctx, nodeID, cred.Username, newPassword, cred.UserSlot); err != nil {
+			slog.WarnContext(ctx, "could not apply credentials to physical bmc hardware; escrowed in vault",
+				"node_id", nodeID,
+				"bmc_ip", node.BMC.IP,
+				"error", err,
+			)
+		} else {
+			slog.InfoContext(ctx, "credentials synchronized to physical bmc hardware successfully",
+				"node_id", nodeID,
+				"bmc_ip", node.BMC.IP,
+			)
 		}
 	}
 

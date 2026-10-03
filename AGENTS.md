@@ -84,3 +84,7 @@ All AI assistants and human contributors must strictly adhere to the following e
    - All agent routines and provisioning steps must be idempotent.
    - Image deployment must target immutable device symlinks (`/dev/disk/by-id/...`).
    - Telemetry collection must be strictly non-destructive and read-only. Credential changes and disk formatting require explicit operator authorization.
+5. **Terminal Execution Constraints (STRICTLY PROHIBITED COMMANDS):**
+   - **NEVER run `npm` or `npx` directly in the host shell.** Direct host invocations of `npm` or `npx` are strictly forbidden. Running `npm`/`npx` is permitted ONLY inside Docker containers if needed.
+   - **NEVER run `npm run build`, `vite build`, or heavy production bundlers.** These commands spawn intensive compilation processes that freeze the terminal session and IDE runner.
+   - Frontend verification must rely on IDE language server diagnostics, linting, or direct code inspection. Do not run production build commands.

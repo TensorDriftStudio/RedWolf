@@ -19,6 +19,7 @@ import (
 type RouterConfig struct {
 	Provisioner  *service.Provisioner
 	AuthSvc      *service.AuthService
+	UserSvc      *service.UserService
 	SettingsSvc  *service.SettingsService
 	BMCEscrow    *service.BMCEscrowService
 	BMCManager   *service.BMCManager
@@ -83,6 +84,20 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/logout", authHandler.Logout)
 		})
 	}
+
+	// User Management REST API
+	if cfg.UserSvc != nil {
+		userHandler := NewUserHandler(cfg.UserSvc, cfg.AuthSvc)
+		r.Route("/api/users", func(r chi.Router) {
+			r.Get("/", userHandler.List)
+			r.Post("/", userHandler.Create)
+			r.Get("/{id}", userHandler.Get)
+			r.Put("/{id}", userHandler.Update)
+			r.Post("/{id}/password", userHandler.ChangePassword)
+			r.Delete("/{id}", userHandler.Delete)
+		})
+	}
+
 
 	// Settings & Directory Testing REST API
 	if cfg.SettingsSvc != nil {
@@ -149,10 +164,21 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		candidates = append(candidates, "assets", "/usr/share/redwolf/assets", "data/images", "/var/lib/redwolf/images")
 
 		for _, dir := range candidates {
+			// Direct path resolution
 			target := filepath.Join(dir, relPath)
 			if info, err := os.Stat(target); err == nil && !info.IsDir() {
 				http.ServeFile(w, r, target)
 				return
+			}
+
+			// If relPath starts with "images/" and dir already represents an images directory, resolve subpath
+			if strings.HasPrefix(relPath, "images/") {
+				subPath := strings.TrimPrefix(relPath, "images/")
+				targetSub := filepath.Join(dir, subPath)
+				if info, err := os.Stat(targetSub); err == nil && !info.IsDir() {
+					http.ServeFile(w, r, targetSub)
+					return
+				}
 			}
 		}
 

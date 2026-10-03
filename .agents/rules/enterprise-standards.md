@@ -78,3 +78,14 @@ All code contributed to RedWolf must adhere to enterprise production standards. 
 3. **Cryptographic & Secret Security:**
    - Generated BMC credentials and user passwords must be encrypted at rest using AES-256-GCM.
    - Root user password hashes in Cloud-Init `user-data` must use SHA-512 crypt (`$6$`) or Yescrypt (`$y$`) with random salt. Plaintext passwords must never appear in persistent logs or telemetry dumps.
+
+---
+
+## 5. Terminal Execution Constraints & Forbidden Commands
+
+1. **Strictly Forbidden Build Commands:**
+   - **NEVER execute `npm run build`, `vite build`, or full production bundling in the agent terminal.** These commands consume heavy CPU and RAM, spawn blocking background child processes, and freeze the IDE terminal.
+   - Never build production bundles to validate TypeScript changes or simple code edits. Rely on IDE language server diagnostics, linting (`npm run lint`), or code review.
+2. **Interactive & Hanging Commands:**
+   - Never run interactive commands that wait for stdin without non-interactive flags.
+   - Never initiate long-running blocking commands without appropriate timeout handling.

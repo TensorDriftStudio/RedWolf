@@ -54,26 +54,44 @@ func CollectDMI(ctx context.Context) (*DMIInfo, error) {
 		biosRaw = runDMIDecode(ctx, "-s", "bios-version")
 	}
 
-	if vendorRaw != "" {
-		vLower := strings.ToLower(vendorRaw)
-		switch {
-		case strings.Contains(vLower, "dell"):
-			info.Vendor = domain.VendorDell
-		case strings.Contains(vLower, "supermicro"):
-			info.Vendor = domain.VendorSupermicro
-		case strings.Contains(vLower, "asrock"):
-			info.Vendor = domain.VendorASRockRack
-		default:
-			info.Vendor = domain.VendorGeneric
-		}
+	// Baseboard fallbacks for whitebox/OEM servers where sys_vendor is generic
+	boardVendor := readDMIFile("/sys/class/dmi/id/board_vendor")
+	if boardVendor == "" {
+		boardVendor = runDMIDecode(ctx, "-s", "baseboard-manufacturer")
+	}
+	boardName := readDMIFile("/sys/class/dmi/id/board_name")
+	if boardName == "" {
+		boardName = runDMIDecode(ctx, "-s", "baseboard-product-name")
+	}
+	boardSerial := readDMIFile("/sys/class/dmi/id/board_serial")
+	if boardSerial == "" {
+		boardSerial = runDMIDecode(ctx, "-s", "baseboard-serial-number")
 	}
 
-	if productRaw != "" {
+	vendorText := strings.ToLower(vendorRaw + " " + boardVendor)
+	switch {
+	case strings.Contains(vendorText, "dell"):
+		info.Vendor = domain.VendorDell
+	case strings.Contains(vendorText, "supermicro"):
+		info.Vendor = domain.VendorSupermicro
+	case strings.Contains(vendorText, "asrock"):
+		info.Vendor = domain.VendorASRockRack
+	default:
+		info.Vendor = domain.VendorGeneric
+	}
+
+	if productRaw != "" && !strings.EqualFold(productRaw, "To be filled by O.E.M.") {
 		info.Model = productRaw
+	} else if boardName != "" {
+		info.Model = boardName
 	}
-	if serialRaw != "" {
+
+	if serialRaw != "" && serialRaw != "0" && !strings.EqualFold(serialRaw, "none") && !strings.EqualFold(serialRaw, "To be filled by O.E.M.") {
 		info.SerialNumber = serialRaw
+	} else if boardSerial != "" && boardSerial != "0" {
+		info.SerialNumber = boardSerial
 	}
+
 	if biosRaw != "" {
 		info.BIOSVersion = biosRaw
 	}

@@ -187,3 +187,55 @@ func (c *Client) SetOneTimePXEBoot(ctx context.Context, bmc domain.BMCInfo, cred
 
 	return fmt.Errorf("failed setting one-time pxe boot via redfish on %s", bmc.IP)
 }
+
+// UpdateCredentials updates credentials on the physical BMC using standard Redfish AccountService.
+func (c *Client) UpdateCredentials(ctx context.Context, bmc domain.BMCInfo, currentCreds *domain.BMCCredential, newUsername, newPassword string, slot int) error {
+	if bmc.IP == "" {
+		return fmt.Errorf("bmc ip address is empty")
+	}
+	if slot <= 0 {
+		slot = 2
+	}
+
+	patchPayload := map[string]any{
+		"Password": newPassword,
+		"Enabled":  true,
+	}
+	if newUsername != "" {
+		patchPayload["UserName"] = newUsername
+	}
+	bodyData, _ := json.Marshal(patchPayload)
+
+	accountURIs := []string{
+		fmt.Sprintf("/redfish/v1/AccountService/Accounts/%d", slot),
+		"/redfish/v1/AccountService/Accounts/2",
+		"/redfish/v1/AccountService/Accounts/1",
+	}
+
+	for _, accountURI := range accountURIs {
+		url := fmt.Sprintf("https://%s%s", bmc.IP, accountURI)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(bodyData))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if currentCreds != nil && currentCreds.Username != "" {
+			req.SetBasicAuth(currentCreds.Username, currentCreds.Password)
+		} else {
+			req.SetBasicAuth("ADMIN", "ADMIN")
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("failed updating bmc credentials via redfish on %s", bmc.IP)
+}

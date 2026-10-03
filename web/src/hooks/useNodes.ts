@@ -1,14 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ServerNode, DeploymentConfig } from '../types';
-import { initialNodes } from '../data/mockNodes';
-
 export function useNodes() {
-  const [nodes, setNodes] = useState<ServerNode[]>(initialNodes);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [nodes, setNodes] = useState<ServerNode[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
-  // Fetch all nodes from REST API with fallback to mock data
+  // Fetch all nodes from RedWolf Core REST API
   const fetchNodes = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -16,12 +14,18 @@ export function useNodes() {
       const res = await fetch('/api/nodes');
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
+        if (Array.isArray(data)) {
           setNodes(data);
+        } else {
+          setNodes([]);
         }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setError(errData.error || `Failed fetching fleet inventory (${res.status})`);
       }
-    } catch {
-      // In dev mode or standalone frontend, retain current nodes
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to connect to RedWolf Core API';
+      setError(message);
     } finally {
       setIsLoading(false);
     }

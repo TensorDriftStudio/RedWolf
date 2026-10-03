@@ -6,10 +6,14 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid username or password")
-	ErrAccountLocked      = errors.New("account is locked")
-	ErrUnauthorized       = errors.New("unauthorized")
+	ErrInvalidCredentials   = errors.New("invalid username or password")
+	ErrAccountLocked        = errors.New("account is locked")
+	ErrUnauthorized         = errors.New("unauthorized")
 	ErrDirectoryUnreachable = errors.New("directory service is unreachable")
+	ErrUserNotFound         = errors.New("user not found")
+	ErrUserExists           = errors.New("username already exists")
+	ErrCannotDeleteLastAdmin = errors.New("cannot delete the last administrator")
+	ErrCannotDeleteSelf     = errors.New("cannot delete own user account")
 )
 
 // UserRole defines privilege levels within the provisioning console.
@@ -25,9 +29,10 @@ const (
 type AuthSource string
 
 const (
-	AuthSourceLocal AuthSource = "LOCAL"
-	AuthSourceLDAP  AuthSource = "LDAP"
-	AuthSourceAD    AuthSource = "ACTIVE_DIRECTORY"
+	AuthSourceLocal     AuthSource = "LOCAL"
+	AuthSourceLDAP      AuthSource = "LDAP"
+	AuthSourceAD        AuthSource = "ACTIVE_DIRECTORY"
+	AuthSourceDirectory AuthSource = "DIRECTORY" // Unified Directory Service alias (LDAP/AD)
 )
 
 // User represents an authenticated operator identity.
@@ -40,6 +45,27 @@ type User struct {
 	Source      AuthSource `json:"source"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastLoginAt time.Time  `json:"lastLoginAt"`
+}
+
+// CreateUserRequest carries payload for creating a new local operator account.
+type CreateUserRequest struct {
+	Username    string   `json:"username"`
+	DisplayName string   `json:"displayName"`
+	Email       string   `json:"email"`
+	Password    string   `json:"password"`
+	Role        UserRole `json:"role"`
+}
+
+// UpdateUserRequest carries payload for editing operator metadata.
+type UpdateUserRequest struct {
+	DisplayName string   `json:"displayName"`
+	Email       string   `json:"email"`
+	Role        UserRole `json:"role"`
+}
+
+// ChangePasswordRequest carries password reset payload.
+type ChangePasswordRequest struct {
+	NewPassword string `json:"newPassword"`
 }
 
 // LoginRequest carries credentials submitted by the UI.
@@ -55,3 +81,4 @@ type LoginResponse struct {
 	User      User      `json:"user"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
+

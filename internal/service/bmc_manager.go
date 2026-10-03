@@ -119,3 +119,40 @@ func (m *BMCManager) ExecuteNodePowerAction(ctx context.Context, nodeID string, 
 	slog.InfoContext(ctx, "power action executed via ipmi rmcp+ successfully", "node_id", nodeID, "action", action)
 	return nil
 }
+
+// SynchronizeCredentials applies updated credentials to the physical BMC hardware via Redfish or IPMI RMCP+.
+func (m *BMCManager) SynchronizeCredentials(ctx context.Context, nodeID string, newUsername, newPassword string, slot int) error {
+	node, err := m.repo.GetByID(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("node %s not found: %w", nodeID, err)
+	}
+
+	if node.BMC.IP == "" {
+		return fmt.Errorf("node %s has no registered BMC IP address", nodeID)
+	}
+
+	currentCreds, _ := m.escrow.GetCredentials(ctx, nodeID)
+
+	slog.InfoContext(ctx, "synchronizing credentials to physical bmc hardware",
+		"node_id", nodeID,
+		"bmc_ip", node.BMC.IP,
+		"slot", slot,
+		"username", newUsername,
+	)
+
+	// Try Redfish first
+	if err := m.redfish.UpdateCredentials(ctx, node.BMC, currentCreds, newUsername, newPassword, slot); err == nil {
+		slog.InfoContext(ctx, "bmc hardware credentials synchronized via redfish", "node_id", nodeID)
+		return nil
+	} else {
+		slog.WarnContext(ctx, "redfish credential update failed; attempting ipmi fallback", "node_id", nodeID, "error", err)
+	}
+
+	// Fallback to IPMI 2.0 RMCP+
+	if err := m.ipmi.UpdateCredentials(ctx, node.BMC, currentCreds, newUsername, newPassword, slot); err != nil {
+		return fmt.Errorf("failed synchronizing bmc credentials via redfish and ipmi: %w", err)
+	}
+
+	slog.InfoContext(ctx, "bmc hardware credentials synchronized via ipmi rmcp+", "node_id", nodeID)
+	return nil
+}

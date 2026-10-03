@@ -190,6 +190,11 @@ func (s *TemplateService) ListTemplates(ctx context.Context) ([]domain.CloudInit
 		t.IsDefault = isDef == 1
 		templates = append(templates, t)
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error during templates iteration: %w", err)
+	}
+
 	return templates, nil
 }
 

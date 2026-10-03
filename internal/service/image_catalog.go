@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,31 +48,31 @@ var supportedTargets = []imageTarget{
 	{
 		os:          domain.OSAlmaLinux9,
 		displayName: "AlmaLinux 9 (Enterprise LTS)",
-		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst"},
-		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst",
+		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst", "almalinux-9-genericcloud.raw", "AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"},
+		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSDebian12,
 		displayName: "Debian 12 Bookworm (Stable LTS)",
-		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw.zst"},
-		downloadURL: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw.zst",
+		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw.zst", "debian-12-genericcloud-amd64.raw", "debian-12-genericcloud.raw"},
+		downloadURL: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw",
 	},
 	{
 		os:          domain.OSAlmaLinux8,
 		displayName: "AlmaLinux 8 (Legacy Enterprise)",
-		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst"},
-		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst",
+		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst", "almalinux-8-genericcloud.raw", "AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"},
+		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSAlmaLinux10,
 		displayName: "AlmaLinux 10 (Technology Preview)",
-		candidates:  []string{"almalinux-10-genericcloud.raw.zstd"},
+		candidates:  []string{"almalinux-10-genericcloud.raw.zstd", "almalinux-10-genericcloud.raw"},
 		downloadURL: "",
 	},
 	{
 		os:          domain.OSDebian13,
 		displayName: "Debian 13 Trixie (Testing)",
-		candidates:  []string{"debian-13-genericcloud.raw.zstd"},
+		candidates:  []string{"debian-13-genericcloud.raw.zstd", "debian-13-genericcloud.raw"},
 		downloadURL: "",
 	},
 }
@@ -174,6 +175,23 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 	}
 
 	destFilename := target.candidates[0]
+	urlLower := strings.ToLower(target.downloadURL)
+	if strings.HasSuffix(urlLower, ".raw") {
+		for _, cand := range target.candidates {
+			if strings.HasSuffix(cand, ".raw") && !strings.HasSuffix(cand, ".raw.zstd") && !strings.HasSuffix(cand, ".raw.zst") {
+				destFilename = cand
+				break
+			}
+		}
+	} else if strings.HasSuffix(urlLower, ".qcow2") {
+		for _, cand := range target.candidates {
+			if strings.HasSuffix(cand, ".qcow2") {
+				destFilename = cand
+				break
+			}
+		}
+	}
+
 	destPath := filepath.Join(s.imageDir, destFilename)
 	partPath := destPath + ".part"
 
@@ -316,4 +334,37 @@ func (s *ImageCatalogService) GetDownloadStatuses() map[domain.OperatingSystem]*
 		copied[k] = &statusCopy
 	}
 	return copied
+}
+
+// GetImageFilename returns the filename of the cached OS image for the specified distribution, or the default candidate name.
+func (s *ImageCatalogService) GetImageFilename(ctx context.Context, osType domain.OperatingSystem) (string, error) {
+	images, err := s.ListImages(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, img := range images {
+		if img.OS == osType && img.Present {
+			return img.Filename, nil
+		}
+	}
+	for _, t := range supportedTargets {
+		if t.os == osType {
+			return t.candidates[0], nil
+		}
+	}
+	return "", fmt.Errorf("unsupported operating system: %s", osType)
+}
+
+// IsImagePresent checks if an image for the given OS is currently cached in storage.
+func (s *ImageCatalogService) IsImagePresent(ctx context.Context, osType domain.OperatingSystem) bool {
+	images, err := s.ListImages(ctx)
+	if err != nil {
+		return false
+	}
+	for _, img := range images {
+		if img.OS == osType && img.Present {
+			return true
+		}
+	}
+	return false
 }

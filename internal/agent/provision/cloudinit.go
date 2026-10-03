@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tensordriftstudio/redwolf/internal/adapter/crypto"
 	"github.com/tensordriftstudio/redwolf/internal/domain"
 )
 
@@ -96,9 +97,10 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 			}
 		}
 		if cfg.RootPassword != "" {
+			hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
 			sb.WriteString("\nchpasswd:\n")
 			sb.WriteString("  list: |\n")
-			sb.WriteString(fmt.Sprintf("    root:%s\n", cfg.RootPassword))
+			sb.WriteString(fmt.Sprintf("    root:%s\n", hashedPass))
 			sb.WriteString("  expire: false\n")
 			sb.WriteString("ssh_pwauth: true\n")
 		}
@@ -126,9 +128,10 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 	}
 
 	if cfg.RootPassword != "" {
+		hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
 		sb.WriteString("\nchpasswd:\n")
 		sb.WriteString("  list: |\n")
-		sb.WriteString(fmt.Sprintf("    root:%s\n", cfg.RootPassword))
+		sb.WriteString(fmt.Sprintf("    root:%s\n", hashedPass))
 		sb.WriteString("  expire: false\n")
 		sb.WriteString("ssh_pwauth: true\n")
 	}
@@ -188,62 +191,103 @@ func generateNetworkConfig(cfg domain.DeploymentConfig, bootMAC string) string {
 }
 
 type partInfo struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Size   uint64 `json:"size"`
-	Type   string `json:"type"`
-	FSType string `json:"fstype"`
-	Label  string `json:"label"`
+	Name     string      `json:"name"`
+	Path     string      `json:"path"`
+	Size     json.Number `json:"size"`
+	Type     string      `json:"type"`
+	FSType   string      `json:"fstype"`
+	Label    string      `json:"label"`
+	Children []partInfo  `json:"children,omitempty"`
 }
 
 type partList struct {
 	BlockDevices []partInfo `json:"blockdevices"`
 }
 
+func collectPartitions(devices []partInfo) []partInfo {
+	var parts []partInfo
+	for _, d := range devices {
+		if d.Type == "part" {
+			parts = append(parts, d)
+		}
+		if len(d.Children) > 0 {
+			parts = append(parts, collectPartitions(d.Children)...)
+		}
+	}
+	return parts
+}
+
 func findRootPartition(ctx context.Context, targetDrivePath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL", targetDrivePath)
+	realDev, err := filepath.EvalSymlinks(targetDrivePath)
+	if err != nil {
+		realDev = targetDrivePath
+	}
+
+	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL", realDev)
 	out, err := cmd.Output()
 	if err != nil {
-		// Fallback to convention: nvme0n1p3 or sda3
-		if strings.Contains(targetDrivePath, "nvme") {
-			return targetDrivePath + "p3", nil
-		}
-		return targetDrivePath + "3", nil
+		return fallbackPartitionPath(realDev), nil
 	}
 
+	partPath, err := findRootPartitionFromJSON(out, realDev)
+	if err != nil {
+		return fallbackPartitionPath(realDev), nil
+	}
+	return partPath, nil
+}
+
+func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 	var data partList
 	if err := json.Unmarshal(out, &data); err != nil {
-		if strings.Contains(targetDrivePath, "nvme") {
-			return targetDrivePath + "p3", nil
-		}
-		return targetDrivePath + "3", nil
+		return "", err
 	}
 
-	// Look for partition with label root, or largest xfs/ext4 partition
-	var candidate string
-	var largestSize uint64
+	parts := collectPartitions(data.BlockDevices)
+	if len(parts) == 0 {
+		return "", fmt.Errorf("no partitions detected")
+	}
 
-	for _, p := range data.BlockDevices {
-		if p.Type != "part" {
-			continue
-		}
-		labelLower := strings.ToLower(p.Label)
-		if strings.Contains(labelLower, "root") {
+	// 1. Look for explicit root label
+	for _, p := range parts {
+		if strings.Contains(strings.ToLower(p.Label), "root") {
 			return p.Path, nil
 		}
-		if (p.FSType == "xfs" || p.FSType == "ext4") && p.Size > largestSize {
-			largestSize = p.Size
-			candidate = p.Path
-		}
 	}
 
+	// 2. Look for largest xfs or ext4 root filesystem
+	var candidate string
+	var largestSize int64
+	for _, p := range parts {
+		if p.FSType == "xfs" || p.FSType == "ext4" {
+			size, _ := p.Size.Int64()
+			if size > largestSize {
+				largestSize = size
+				candidate = p.Path
+			}
+		}
+	}
 	if candidate != "" {
 		return candidate, nil
 	}
 
-	// Default fallback
-	if strings.Contains(targetDrivePath, "nvme") {
-		return targetDrivePath + "p3", nil
+	// 3. Fallback to the largest partition
+	for _, p := range parts {
+		size, _ := p.Size.Int64()
+		if size > largestSize {
+			largestSize = size
+			candidate = p.Path
+		}
 	}
-	return targetDrivePath + "3", nil
+	if candidate != "" {
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("could not identify root partition")
+}
+
+func fallbackPartitionPath(realDev string) string {
+	if len(realDev) > 0 && realDev[len(realDev)-1] >= '0' && realDev[len(realDev)-1] <= '9' {
+		return realDev + "p3"
+	}
+	return realDev + "3"
 }

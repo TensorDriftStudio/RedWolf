@@ -31,8 +31,11 @@ func TestGenerateUserData(t *testing.T) {
 	if !strings.Contains(userData, "ssh-rsa AAAAB3NzaC1yc2E") {
 		t.Fatalf("expected SSH public key in user-data")
 	}
-	if !strings.Contains(userData, "root:TestPassword123!") {
-		t.Fatalf("expected root password in chpasswd list")
+	if !strings.Contains(userData, "root:$6$") {
+		t.Fatalf("expected SHA-512 crypt root password in chpasswd list, got: %s", userData)
+	}
+	if strings.Contains(userData, "TestPassword123!") {
+		t.Fatalf("plaintext password must never appear in user-data!")
 	}
 }
 
@@ -83,5 +86,91 @@ func TestGenerateNetworkConfig_Static(t *testing.T) {
 	}
 	if !strings.Contains(netConfig, "- 1.1.1.1") || !strings.Contains(netConfig, "- 9.9.9.9") {
 		t.Fatalf("expected custom DNS servers, got: %s", netConfig)
+	}
+}
+
+func TestFindRootPartitionFromJSON_NestedChildren(t *testing.T) {
+	// Sample lsblk JSON simulating AlmaLinux 9 cloud raw image on NVMe
+	almaJSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 1048576,
+						"type": "part",
+						"fstype": null,
+						"label": null
+					},
+					{
+						"name": "nvme0n1p2",
+						"path": "/dev/nvme0n1p2",
+						"size": 209715200,
+						"type": "part",
+						"fstype": "vfat",
+						"label": "EFI"
+					},
+					{
+						"name": "nvme0n1p3",
+						"path": "/dev/nvme0n1p3",
+						"size": 53476327424,
+						"type": "part",
+						"fstype": "xfs",
+						"label": "root"
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(almaJSON, "/dev/nvme0n1")
+	if err != nil {
+		t.Fatalf("unexpected error finding root partition: %v", err)
+	}
+	if part != "/dev/nvme0n1p3" {
+		t.Fatalf("expected /dev/nvme0n1p3, got %s", part)
+	}
+
+	// Sample lsblk JSON simulating Debian 12 cloud raw image on SAS/SATA (root is partition 1)
+	debianJSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "sda",
+				"path": "/dev/sda",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "sda1",
+						"path": "/dev/sda1",
+						"size": 53150220288,
+						"type": "part",
+						"fstype": "ext4",
+						"label": "rootfs"
+					},
+					{
+						"name": "sda15",
+						"path": "/dev/sda15",
+						"size": 130023424,
+						"type": "part",
+						"fstype": "vfat",
+						"label": "ESP"
+					}
+				]
+			}
+		]
+	}`)
+
+	partDebian, err := findRootPartitionFromJSON(debianJSON, "/dev/sda")
+	if err != nil {
+		t.Fatalf("unexpected error finding Debian root partition: %v", err)
+	}
+	if partDebian != "/dev/sda1" {
+		t.Fatalf("expected /dev/sda1, got %s", partDebian)
 	}
 }

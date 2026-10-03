@@ -14,13 +14,15 @@ import (
 type AuthService struct {
 	sessions    *auth.SessionManager
 	settingsSvc *SettingsService
+	userSvc     *UserService
 }
 
 // NewAuthService creates an initialized authentication coordinator.
-func NewAuthService(sessions *auth.SessionManager, settingsSvc *SettingsService) *AuthService {
+func NewAuthService(sessions *auth.SessionManager, settingsSvc *SettingsService, userSvc *UserService) *AuthService {
 	return &AuthService{
 		sessions:    sessions,
 		settingsSvc: settingsSvc,
+		userSvc:     userSvc,
 	}
 }
 
@@ -38,20 +40,43 @@ func (s *AuthService) Login(ctx context.Context, req domain.LoginRequest) (*doma
 		if !settings.Auth.LocalAuthEnabled {
 			return nil, fmt.Errorf("local authentication is disabled")
 		}
-		// Built-in emergency and enterprise default administrator
-		if req.Username == "admin" && (req.Password == "admin123" || req.Password == "redwolf123" || req.Password == "admin") {
-			user = &domain.User{
-				ID:          "usr-local-admin",
-				Username:    "admin",
-				DisplayName: "System Administrator",
-				Email:       "admin@redwolf.internal",
-				Role:        domain.RoleAdmin,
-				Source:      domain.AuthSourceLocal,
-				CreatedAt:   time.Now().UTC(),
-				LastLoginAt: time.Now().UTC(),
+		if s.userSvc != nil {
+			user, err = s.userSvc.VerifyPassword(ctx, req.Username, req.Password)
+			if err != nil {
+				return nil, domain.ErrInvalidCredentials
 			}
 		} else {
-			return nil, domain.ErrInvalidCredentials
+			// Emergency fallback for unconfigured environments
+			if req.Username == "admin" && (req.Password == "admin123" || req.Password == "redwolf123" || req.Password == "admin") {
+				user = &domain.User{
+					ID:          "usr-local-admin",
+					Username:    "admin",
+					DisplayName: "System Administrator",
+					Email:       "admin@redwolf.internal",
+					Role:        domain.RoleAdmin,
+					Source:      domain.AuthSourceLocal,
+					CreatedAt:   time.Now().UTC(),
+					LastLoginAt: time.Now().UTC(),
+				}
+			} else {
+				return nil, domain.ErrInvalidCredentials
+			}
+		}
+
+	case domain.AuthSourceDirectory:
+		// Unified Directory Service: route to Active Directory or OpenLDAP depending on active configuration
+		if settings.Auth.ActiveDirectory.Enabled {
+			user, err = auth.AuthenticateAD(ctx, settings.Auth.ActiveDirectory, req.Username, req.Password)
+			if err != nil {
+				return nil, err
+			}
+		} else if settings.Auth.LDAP.Enabled {
+			user, err = auth.AuthenticateLDAP(ctx, settings.Auth.LDAP, req.Username, req.Password)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("no enterprise directory service (Active Directory or OpenLDAP) is currently enabled in settings")
 		}
 
 	case domain.AuthSourceLDAP:

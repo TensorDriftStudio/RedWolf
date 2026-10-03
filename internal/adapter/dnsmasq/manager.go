@@ -80,6 +80,7 @@ func (m *Manager) RenderConfig(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.TFTPDir, 0755); err != nil {
 		return fmt.Errorf("failed to create tftp dir: %w", err)
 	}
+	m.seedTFTPBootloaders()
 
 	serverIP := m.cfg.ServerIP
 	if serverIP == "" {
@@ -329,4 +330,31 @@ func (m *Manager) detectInterfaceIP(ifaceName string) string {
 		}
 	}
 	return ""
+}
+
+func (m *Manager) seedTFTPBootloaders() {
+	requiredFiles := []string{"ipxe.efi", "undionly.kpxe"}
+	searchDirs := []string{
+		"assets/tftp",
+		"/usr/share/redwolf/assets/tftp",
+		"data/tftp",
+		"../assets/tftp",
+	}
+
+	for _, reqFile := range requiredFiles {
+		targetPath := filepath.Join(m.cfg.TFTPDir, reqFile)
+		if _, err := os.Stat(targetPath); err == nil {
+			continue // Already exists
+		}
+
+		for _, srcDir := range searchDirs {
+			srcPath := filepath.Join(srcDir, reqFile)
+			if data, err := os.ReadFile(srcPath); err == nil {
+				if err := os.WriteFile(targetPath, data, 0644); err == nil {
+					slog.Info("seeded tftp bootstrap loader", "file", reqFile, "source", srcPath, "target", targetPath)
+					break
+				}
+			}
+		}
+	}
 }

@@ -4,9 +4,11 @@ import type { ServerNode } from '../types';
 
 interface StatsBarProps {
   nodes: ServerNode[];
+  isLoading?: boolean;
 }
 
-export const StatsBar: React.FC<StatsBarProps> = ({ nodes }) => {
+export const StatsBar: React.FC<StatsBarProps> = ({ nodes, isLoading = false }) => {
+  const isInitialLoading = isLoading && nodes.length === 0;
   const total = nodes.length;
   const ready = nodes.filter(n => n.status === 'READY_FOR_PROVISIONING').length;
   const provisioning = nodes.filter(n => n.status === 'PROVISIONING' || n.status === 'DISCOVERING').length;
@@ -15,39 +17,47 @@ export const StatsBar: React.FC<StatsBarProps> = ({ nodes }) => {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {/* Total Servers */}
-      <div className="border-l-2 border-l-slate-400 border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
+      <div className="border border-[#212836] bg-[#151b24] p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-[11px] font-medium text-enterprise-textMuted uppercase tracking-wider">Total Servers</div>
-          <div className="text-xl font-bold font-mono text-white mt-0.5">{total}</div>
+          <div className="text-[11px] font-medium text-slate-400">Total Servers</div>
+          <div className="text-lg font-bold font-mono text-white mt-0.5">
+            {isInitialLoading ? <span className="text-slate-600 animate-pulse">—</span> : total}
+          </div>
         </div>
-        <Server className="h-5 w-5 text-enterprise-textDim" />
+        <Server className="h-4 w-4 text-slate-500" />
       </div>
 
       {/* Ready for Provisioning */}
-      <div className="border-l-2 border-l-[#1f6feb] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
+      <div className="border border-[#212836] bg-[#151b24] p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-[11px] font-medium text-[#79c0ff] uppercase tracking-wider">Ready to Deploy</div>
-          <div className="text-xl font-bold font-mono text-white mt-0.5">{ready}</div>
+          <div className="text-[11px] font-medium text-slate-400">Ready to Deploy</div>
+          <div className="text-lg font-bold font-mono text-blue-400 mt-0.5">
+            {isInitialLoading ? <span className="text-slate-600 animate-pulse">—</span> : ready}
+          </div>
         </div>
-        <CheckCircle2 className="h-5 w-5 text-[#1f6feb]" />
+        <CheckCircle2 className="h-4 w-4 text-blue-400" />
       </div>
 
       {/* In-Flight Provisioning */}
-      <div className="border-l-2 border-l-[#d29922] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
+      <div className="border border-[#212836] bg-[#151b24] p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-[11px] font-medium text-[#e3b341] uppercase tracking-wider">Deploying / Discovering</div>
-          <div className="text-xl font-bold font-mono text-white mt-0.5">{provisioning}</div>
+          <div className="text-[11px] font-medium text-slate-400">Deploying</div>
+          <div className="text-lg font-bold font-mono text-amber-400 mt-0.5">
+            {isInitialLoading ? <span className="text-slate-600 animate-pulse">—</span> : provisioning}
+          </div>
         </div>
-        <Loader2 className={`h-5 w-5 text-[#d29922] ${provisioning > 0 ? 'animate-spin' : ''}`} />
+        <Loader2 className={`h-4 w-4 text-amber-400 ${provisioning > 0 ? 'animate-spin' : ''}`} />
       </div>
 
       {/* Active in Production */}
-      <div className="border-l-2 border-l-[#238636] border border-enterprise-border bg-enterprise-panel p-3 rounded-sm flex items-center justify-between">
+      <div className="border border-[#212836] bg-[#151b24] p-3 rounded-sm flex items-center justify-between">
         <div>
-          <div className="text-[11px] font-medium text-[#7ee787] uppercase tracking-wider">Active in Production</div>
-          <div className="text-xl font-bold font-mono text-white mt-0.5">{active}</div>
+          <div className="text-[11px] font-medium text-slate-400">Active</div>
+          <div className="text-lg font-bold font-mono text-emerald-400 mt-0.5">
+            {isInitialLoading ? <span className="text-slate-600 animate-pulse">—</span> : active}
+          </div>
         </div>
-        <HardDrive className="h-5 w-5 text-[#238636]" />
+        <HardDrive className="h-4 w-4 text-emerald-400" />
       </div>
     </div>
   );

@@ -102,6 +102,52 @@ func (c *RemoteController) SetOneTimePXEBoot(ctx context.Context, bmc domain.BMC
 	return nil
 }
 
+// UpdateCredentials updates and enables the specified user slot password on the physical BMC via IPMI 2.0 RMCP+.
+func (c *RemoteController) UpdateCredentials(ctx context.Context, bmc domain.BMCInfo, currentCreds *domain.BMCCredential, newUsername, newPassword string, slot int) error {
+	if bmc.IP == "" {
+		return fmt.Errorf("bmc ip address is empty")
+	}
+	if slot <= 0 {
+		slot = 2 // Standard administrator user slot
+	}
+
+	args := c.buildBaseArgs(bmc.IP, currentCreds)
+
+	// Step 1: Set username if provided
+	if newUsername != "" {
+		nameArgs := append([]string{}, args...)
+		nameArgs = append(nameArgs, "user", "set", "name", fmt.Sprintf("%d", slot), newUsername)
+		cmd := exec.CommandContext(ctx, "ipmitool", nameArgs...)
+		_, _ = cmd.CombinedOutput()
+	}
+
+	// Step 2: Set user password (strictly 14-16 characters)
+	passArgs := append([]string{}, args...)
+	passArgs = append(passArgs, "user", "set", "password", fmt.Sprintf("%d", slot), newPassword)
+	cmdPass := exec.CommandContext(ctx, "ipmitool", passArgs...)
+	if out, err := cmdPass.CombinedOutput(); err != nil {
+		return fmt.Errorf("ipmitool user set password failed: %w (output: %s)", err, string(out))
+	}
+
+	// Step 3: Enable user account
+	enableArgs := append([]string{}, args...)
+	enableArgs = append(enableArgs, "user", "enable", fmt.Sprintf("%d", slot))
+	cmdEnable := exec.CommandContext(ctx, "ipmitool", enableArgs...)
+	_ = cmdEnable.Run()
+
+	// Step 4: Grant administrator privilege on LAN channel
+	channel := bmc.Channel
+	if channel <= 0 {
+		channel = 1
+	}
+	privArgs := append([]string{}, args...)
+	privArgs = append(privArgs, "channel", "setaccess", fmt.Sprintf("%d", channel), fmt.Sprintf("%d", slot), "callin=on", "ipmi=on", "link=on", "privilege=4")
+	cmdPriv := exec.CommandContext(ctx, "ipmitool", privArgs...)
+	_ = cmdPriv.Run()
+
+	return nil
+}
+
 func (c *RemoteController) buildBaseArgs(ip string, creds *domain.BMCCredential) []string {
 	user := "ADMIN"
 	pass := "ADMIN"

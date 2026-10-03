@@ -107,6 +107,9 @@ func detectBootInterface(ctx context.Context) string {
 				return fields[0]
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			slog.DebugContext(ctx, "scanner error reading /proc/net/route", "error", err)
+		}
 	}
 
 	// Fallback to ip route

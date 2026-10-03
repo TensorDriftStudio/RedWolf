@@ -86,22 +86,31 @@ func main() {
 	// 3. Initialize Settings Service & Directory Provider
 	settingsSvc := service.NewSettingsService(repo.DB())
 
-	// 4. Initialize Session Manager & Multi-Provider Auth Service
-	sessionMgr := adapterAuth.NewSessionManager(24 * time.Hour)
-	authSvc := service.NewAuthService(sessionMgr, settingsSvc)
+	// 4. Initialize User Repository, User Service & Default Admin Bootstrap
+	userRepo := adapterSQLite.NewUserRepository(repo.DB())
+	userSvc := service.NewUserService(userRepo)
+	if err := userSvc.EnsureDefaultAdmin(ctx); err != nil {
+		slog.Error("failed bootstrapping default administrator", "error", err)
+	}
 
-	// 5. Initialize Core Domain Provisioner, BMC Escrow Vault & BMC Power Manager
+	// 5. Initialize Session Manager & Multi-Provider Auth Service
+	sessionMgr := adapterAuth.NewSessionManager(24 * time.Hour)
+	authSvc := service.NewAuthService(sessionMgr, settingsSvc, userSvc)
+
+	// 6. Initialize Core Domain Provisioner, BMC Escrow Vault & BMC Power Manager
 	prov := service.NewProvisioner(repo, eventBus)
 	vaultKey := getEnv("REDWOLF_VAULT_KEY", "redwolf-master-key-datacenter-default-256")
 	bmcEscrow := service.NewBMCEscrowService(repo.DB(), vaultKey, repo, eventBus)
 	bmcMgr := service.NewBMCManager(repo, bmcEscrow)
+	bmcEscrow.SetBMCManager(bmcMgr)
 
-	// 6. Initialize Cloud-Init Template Service & OS Image Catalog
+	// 7. Initialize Cloud-Init Template Service & OS Image Catalog
 	templateSvc := service.NewTemplateService(repo.DB())
 	prov.SetTemplateService(templateSvc)
 	imageCatalog := service.NewImageCatalogService(imageDir)
+	prov.SetImageCatalog(imageCatalog)
 
-	// 7. Initialize & Start Managed dnsmasq Supervisor with persisted network settings
+	// 8. Initialize & Start Managed dnsmasq Supervisor with persisted network settings
 	initSettings, _ := settingsSvc.GetSettings(ctx)
 	var netCfg domain.NetworkSettings
 	if initSettings != nil {
@@ -131,7 +140,7 @@ func main() {
 		_ = dnsmasqMgr.Stop(stopCtx)
 	}()
 
-	// 8. Detect Web Dashboard static assets (/usr/share/redwolf/web in container, web/dist locally)
+	// 9. Detect Web Dashboard static assets (/usr/share/redwolf/web in container, web/dist locally)
 	var webFS fs.FS
 	for _, candidate := range []string{"/usr/share/redwolf/web", "web/dist", "dist"} {
 		if _, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil {
@@ -141,10 +150,11 @@ func main() {
 		}
 	}
 
-	// 9. Initialize Router & HTTP Server
+	// 10. Initialize Router & HTTP Server
 	router := adapterHTTP.NewRouter(adapterHTTP.RouterConfig{
 		Provisioner:  prov,
 		AuthSvc:      authSvc,
+		UserSvc:      userSvc,
 		SettingsSvc:  settingsSvc,
 		BMCEscrow:    bmcEscrow,
 		BMCManager:   bmcMgr,
@@ -159,6 +169,7 @@ func main() {
 
 	serverAddr := fmt.Sprintf(":%d", httpPort)
 	srv := adapterHTTP.NewServer(serverAddr, router)
+
 
 	go func() {
 		if err := srv.Start(); err != nil {

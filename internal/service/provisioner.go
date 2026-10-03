@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,10 +15,11 @@ import (
 
 // Provisioner coordinates node lifecycle, hardware inventory registration, and deployment tasks.
 type Provisioner struct {
-	repo      port.NodeRepository
-	events    port.EventBroadcaster
-	templates *TemplateService
-	tasks     sync.Map // Map[string]*domain.DeploymentTask keyed by nodeID
+	repo         port.NodeRepository
+	events       port.EventBroadcaster
+	templates    *TemplateService
+	imageCatalog *ImageCatalogService
+	tasks        sync.Map // Map[string]*domain.DeploymentTask keyed by nodeID
 }
 
 // NewProvisioner creates an initialized service coordinator.
@@ -31,6 +33,11 @@ func NewProvisioner(repo port.NodeRepository, events port.EventBroadcaster) *Pro
 // SetTemplateService associates the Cloud-Init template service with the provisioner.
 func (p *Provisioner) SetTemplateService(ts *TemplateService) {
 	p.templates = ts
+}
+
+// SetImageCatalog associates the OS image catalog with the provisioner for pre-flight validation.
+func (p *Provisioner) SetImageCatalog(ic *ImageCatalogService) {
+	p.imageCatalog = ic
 }
 
 // RegisterDiscoveredNode ingests machine-readable telemetry from an in-memory discovery agent.
@@ -102,6 +109,35 @@ func (p *Provisioner) InitiateDeployment(ctx context.Context, cfg domain.Deploym
 		return fmt.Errorf("invalid deployment configuration: %w", err)
 	}
 
+	// Verify image availability if ImageCatalog is attached
+	var imageFilename string
+	if p.imageCatalog != nil {
+		if !p.imageCatalog.IsImagePresent(ctx, cfg.OS) {
+			return fmt.Errorf("operating system image for %s is not cached on appliance; please download or place it in data/images first", cfg.OS)
+		}
+		var err error
+		imageFilename, err = p.imageCatalog.GetImageFilename(ctx, cfg.OS)
+		if err != nil {
+			return fmt.Errorf("failed to resolve image filename for %s: %w", cfg.OS, err)
+		}
+	} else {
+		// Fallback default filenames when catalog service is unconfigured (e.g. testing)
+		switch cfg.OS {
+		case domain.OSAlmaLinux9:
+			imageFilename = "almalinux-9-genericcloud.raw.zstd"
+		case domain.OSAlmaLinux8:
+			imageFilename = "almalinux-8-genericcloud.raw.zstd"
+		case domain.OSDebian12:
+			imageFilename = "debian-12-genericcloud.raw.zstd"
+		case domain.OSAlmaLinux10:
+			imageFilename = "almalinux-10-genericcloud.raw.zstd"
+		case domain.OSDebian13:
+			imageFilename = "debian-13-genericcloud.raw.zstd"
+		default:
+			imageFilename = fmt.Sprintf("%s-genericcloud.raw.zstd", cfg.OS)
+		}
+	}
+
 	// Resolve Cloud-Init template if specified
 	if cfg.TemplateID != "" && cfg.CustomUserData == "" && p.templates != nil {
 		if tpl, err := p.templates.GetTemplate(ctx, cfg.TemplateID); err == nil {
@@ -135,28 +171,13 @@ func (p *Provisioner) InitiateDeployment(ctx context.Context, cfg domain.Deploym
 		Logs: []string{
 			fmt.Sprintf("[%s] Provisioning session authorized by operator", time.Now().UTC().Format("15:04:05")),
 			fmt.Sprintf("[%s] Target disk selected: %s", time.Now().UTC().Format("15:04:05"), cfg.TargetDrivePath),
-			fmt.Sprintf("[%s] Distribution image queued: %s", time.Now().UTC().Format("15:04:05"), cfg.OS),
+			fmt.Sprintf("[%s] Distribution image queued: %s (%s)", time.Now().UTC().Format("15:04:05"), cfg.OS, imageFilename),
 		},
 	}
 	node.ProvisioningState = initialState
 
 	if err := p.repo.Save(ctx, node); err != nil {
 		return fmt.Errorf("failed to update node to provisioning state: %w", err)
-	}
-
-	// Prepare task payload for discovery agent
-	imageFilename := "almalinux-9-genericcloud.raw.zstd"
-	switch cfg.OS {
-	case domain.OSAlmaLinux9:
-		imageFilename = "almalinux-9-genericcloud.raw.zstd"
-	case domain.OSAlmaLinux8:
-		imageFilename = "almalinux-8-genericcloud.raw.zstd"
-	case domain.OSDebian12:
-		imageFilename = "debian-12-genericcloud.raw.zstd"
-	case domain.OSAlmaLinux10:
-		imageFilename = "almalinux-10-genericcloud.raw.zstd"
-	case domain.OSDebian13:
-		imageFilename = "debian-13-genericcloud.raw.zstd"
 	}
 
 	task := &domain.DeploymentTask{
@@ -221,6 +242,9 @@ func (p *Provisioner) UpdateProgress(ctx context.Context, nodeID string, progres
 	if progress >= 100 {
 		_ = node.TransitionTo(domain.NodeStatusActive)
 		node.ProvisioningState.Stage = "Active in Production"
+		p.tasks.Delete(nodeID)
+	} else if strings.Contains(strings.ToLower(stage), "failed") || strings.Contains(strings.ToLower(stage), "error") || progress < 0 {
+		_ = node.TransitionTo(domain.NodeStatusError)
 		p.tasks.Delete(nodeID)
 	}
 

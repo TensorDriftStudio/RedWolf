@@ -21,8 +21,8 @@ func NewServer(addr string, handler http.Handler) *Server {
 			Addr:              addr,
 			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      60 * time.Second,
+			ReadTimeout:       60 * time.Second,
+			WriteTimeout:      0, // Disabled for high-throughput OS image streaming and WebSocket events
 			IdleTimeout:       120 * time.Second,
 		},
 	}

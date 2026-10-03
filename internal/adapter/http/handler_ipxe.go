@@ -94,6 +94,11 @@ boot
 }
 
 func (h *IPXEHandler) renderProvisioningScript(w http.ResponseWriter, node *domain.ServerNode) {
+	targetDrive := "/dev/nvme0n1"
+	if node.ProvisioningState != nil && node.ProvisioningState.TargetDrive != "" {
+		targetDrive = node.ProvisioningState.TargetDrive
+	}
+
 	script := fmt.Sprintf(`#!ipxe
 echo ========================================================
 echo RedWolf Bare-Metal Provisioning Engine
@@ -103,6 +108,6 @@ echo ========================================================
 kernel %s/assets/discovery/vmlinuz console=tty0 console=ttyS0,115200n8 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
-`, node.ID, node.ProvisioningState.TargetDrive, h.serverURL, node.ID, h.serverURL, h.serverURL)
+`, node.ID, targetDrive, h.serverURL, node.ID, h.serverURL, h.serverURL)
 	_, _ = w.Write([]byte(script))
 }

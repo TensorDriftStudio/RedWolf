@@ -1,4 +1,4 @@
-export type Vendor = 'Dell Inc.' | 'Supermicro' | 'ASRockRack';
+export type Vendor = 'Dell Inc.' | 'Supermicro' | 'ASRockRack' | 'Generic';
 
 export type NodeStatus = 
   | 'DISCOVERING'
@@ -13,8 +13,8 @@ export interface StorageDevice {
   byId: string;
   sizeBytes: number;
   sizeHuman: string;
-  type: 'NVMe' | 'SSD' | 'SATA' | 'BOSS' | 'SATADOM';
-  transport: 'nvme' | 'sata' | 'sas' | 'pcie';
+  type: string;
+  transport: 'nvme' | 'sata' | 'sas' | 'pcie' | string;
   model: string;
   serial: string;
 }
@@ -137,8 +137,9 @@ export interface PowerStatusResponse {
   bmcIp: string;
 }
 
-export type AuthSource = 'LOCAL' | 'LDAP' | 'ACTIVE_DIRECTORY';
+export type AuthSource = 'LOCAL' | 'DIRECTORY' | 'LDAP' | 'ACTIVE_DIRECTORY';
 export type UserRole = 'ADMIN' | 'OPERATOR' | 'VIEWER';
+export type DirectoryType = 'active_directory' | 'ldap';
 
 export interface User {
   id: string;
@@ -151,11 +152,30 @@ export interface User {
   lastLoginAt: string;
 }
 
+export interface CreateUserPayload {
+  username: string;
+  displayName: string;
+  email: string;
+  password: string;
+  role: UserRole;
+}
+
+export interface UpdateUserPayload {
+  displayName: string;
+  email: string;
+  role: UserRole;
+}
+
+export interface ChangePasswordPayload {
+  newPassword: string;
+}
+
 export interface LoginResponse {
   token: string;
   user: User;
   expiresAt: string;
 }
+
 
 export interface LDAPConfig {
   enabled: boolean;

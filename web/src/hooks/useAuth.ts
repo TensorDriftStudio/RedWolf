@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { User, AuthSource } from '../types';
 
 const STORAGE_KEY_USER = 'redwolf_user';
@@ -20,6 +20,36 @@ export function useAuth() {
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Validate existing session token against RedWolf Core on mount
+  useEffect(() => {
+    const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+    if (!token) return;
+
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (res.ok) {
+          return res.json();
+        }
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem(STORAGE_KEY_TOKEN);
+          localStorage.removeItem(STORAGE_KEY_USER);
+          setUser(null);
+        }
+        return null;
+      })
+      .then((validatedUser) => {
+        if (validatedUser) {
+          setUser(validatedUser);
+          localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(validatedUser));
+        }
+      })
+      .catch(() => {
+        // Retain current session in offline/standalone client
+      });
+  }, []);
 
   const login = useCallback(async (username: string, password: string, source: AuthSource = 'LOCAL') => {
     setIsLoading(true);

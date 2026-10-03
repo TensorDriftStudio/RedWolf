@@ -65,6 +65,9 @@ func CollectCPU(ctx context.Context) (*domain.CPUInfo, error) {
 			totalProcessors++
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		slog.WarnContext(ctx, "scanner error reading /proc/cpuinfo", "error", err)
+	}
 
 	if modelName != "" {
 		info.Model = modelName

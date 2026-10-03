@@ -40,6 +40,9 @@ func CollectMemory(ctx context.Context) (*domain.MemoryInfo, error) {
 				break
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			slog.WarnContext(ctx, "scanner error reading /proc/meminfo", "error", err)
+		}
 		meminfoFile.Close()
 	}
 
