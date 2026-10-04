@@ -20,10 +20,22 @@ import {
   Trash2,
   Edit2,
   Shield,
-  AlertTriangle
+  AlertTriangle,
+  Network,
+  Radio,
+  Info,
+  Sparkles
 } from 'lucide-react';
 import { getAuthHeaders } from '../utils/auth';
 
+
+interface HostInterfaceInfo {
+  name: string;
+  mac: string;
+  ips: string[];
+  isUp: boolean;
+  flags: string;
+}
 
 interface SettingsViewProps {
   onBackToFleet?: () => void;
@@ -185,6 +197,70 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     } finally {
       setIsDownloadingImage(null);
     }
+  };
+
+  // Detected Host Network Adapters State
+  const [hostInterfaces, setHostInterfaces] = useState<HostInterfaceInfo[]>([]);
+  const [isLoadingInterfaces, setIsLoadingInterfaces] = useState<boolean>(false);
+  const [autoConfiguredNotice, setAutoConfiguredNotice] = useState<string | null>(null);
+
+  const loadHostInterfaces = useCallback(() => {
+    setIsLoadingInterfaces(true);
+    fetch('/api/settings/interfaces', {
+      headers: { ...getAuthHeaders() },
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: HostInterfaceInfo[]) => {
+        if (Array.isArray(data)) setHostInterfaces(data);
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingInterfaces(false));
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'network') {
+      loadHostInterfaces();
+    }
+  }, [activeTab, loadHostInterfaces]);
+
+  const handleSelectInterface = (iface: HostInterfaceInfo) => {
+    const primaryIpWithMask = iface.ips.find((ip) => ip.includes('.')) || '';
+    const ipOnly = primaryIpWithMask.split('/')[0];
+    const mask = primaryIpWithMask.split('/')[1] || '24';
+
+    let subnet = settings.network.subnetCidr;
+    let gw = settings.network.gateway;
+    let rangeStart = settings.network.dhcpRangeStart;
+    let rangeEnd = settings.network.dhcpRangeEnd;
+
+    if (ipOnly) {
+      const parts = ipOnly.split('.');
+      if (parts.length === 4) {
+        subnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/${mask}`;
+        gw = ipOnly;
+        rangeStart = `${parts[0]}.${parts[1]}.${parts[2]}.100`;
+        rangeEnd = `${parts[0]}.${parts[1]}.${parts[2]}.200`;
+      }
+    }
+
+    setSettings({
+      ...settings,
+      general: {
+        ...settings.general,
+        provisioningInterface: iface.name,
+        serverUrl: ipOnly ? `http://${ipOnly}:8080` : settings.general.serverUrl,
+      },
+      network: {
+        ...settings.network,
+        subnetCidr: subnet,
+        gateway: gw,
+        dhcpRangeStart: rangeStart,
+        dhcpRangeEnd: rangeEnd,
+      },
+    });
+
+    setAutoConfiguredNotice(`Auto-configured PXE parameters for ${iface.name} (${primaryIpWithMask || 'No IPv4'})`);
+    setTimeout(() => setAutoConfiguredNotice(null), 5000);
   };
 
   // Unified Directory Test State
@@ -1687,16 +1763,116 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Tab 2: PXE Engine & Network */}
       {activeTab === 'network' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-5">
-          <div className="pb-3 border-b border-slate-800">
-            <h3 className="text-xs font-semibold text-slate-200">
-              PXE Engine & DHCP Subnet Parameters
-            </h3>
+        <div className="bg-slate-900 border border-slate-800 rounded-sm p-5 space-y-6">
+          <div className="pb-3 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Network className="w-4 h-4 text-redwolf-primary" />
+                PXE Engine & DHCP Subnet Parameters
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Configure the Layer-2 provisioning broadcast network, DHCP lease pool, and kernel streaming endpoints.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadHostInterfaces}
+              disabled={isLoadingInterfaces}
+              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded flex items-center gap-1.5 transition-colors border border-slate-700 self-start sm:self-auto"
+            >
+              <RefreshCw className={`w-3 h-3 ${isLoadingInterfaces ? 'animate-spin' : ''}`} />
+              Refresh Interfaces
+            </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Real-time Zero-Downtime Banner */}
+          <div className="bg-blue-950/30 border border-blue-800/50 rounded-sm p-3.5 flex items-start gap-3">
+            <Radio className="w-4 h-4 text-blue-400 mt-0.5 shrink-0 animate-pulse" />
+            <div className="text-xs space-y-1">
+              <span className="font-semibold text-blue-200">Zero-Downtime Live Configuration</span>
+              <p className="text-blue-300/80 leading-relaxed">
+                Clicking <strong>Save Configuration</strong> applies changes live to the internal DHCP engine (<code>dnsmasq</code>), TFTP bootloader, and dynamic iPXE endpoints in real time. 
+                <span className="text-emerald-400 font-medium"> No container restart or server reboot is needed.</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Auto-Configuration Feedback Alert */}
+          {autoConfiguredNotice && (
+            <div className="bg-emerald-950/40 border border-emerald-800/60 rounded-sm p-3 flex items-center gap-2.5 text-xs text-emerald-300">
+              <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{autoConfiguredNotice} — Click <strong>Save Configuration</strong> to apply live.</span>
+            </div>
+          )}
+
+          {/* Detected Host Network Adapters */}
+          <div className="bg-slate-950 border border-slate-800 rounded-sm p-4 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+              <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                <Info className="w-3.5 h-3.5 text-slate-400" />
+                Detected Appliance Network Adapters
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Click an interface card below to auto-populate all matching network parameters:
+              </span>
+            </div>
+
+            {hostInterfaces.length === 0 ? (
+              <p className="text-xs text-slate-500 italic py-2">
+                {isLoadingInterfaces ? 'Scanning host network interfaces...' : 'No external network adapters detected.'}
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {hostInterfaces.map((iface) => {
+                  const isCurrent = settings.general.provisioningInterface === iface.name;
+                  const primaryIp = iface.ips.find((ip) => ip.includes('.')) || 'No IPv4 Assigned';
+                  return (
+                    <button
+                      key={iface.name}
+                      type="button"
+                      onClick={() => handleSelectInterface(iface)}
+                      className={`text-left p-3 rounded-sm border transition-all flex flex-col justify-between group ${
+                        isCurrent
+                          ? 'border-red-500/70 bg-red-950/20'
+                          : 'border-slate-800 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="text-xs font-mono font-bold text-slate-100 group-hover:text-red-400 transition-colors">
+                          {iface.name}
+                        </span>
+                        {isCurrent ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 border border-red-700/50 font-medium">
+                            Active PXE
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 group-hover:text-slate-200 font-medium">
+                            Select Interface
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1.5 text-xs text-slate-300 font-mono">
+                        {primaryIp}
+                      </div>
+                      <div className="mt-1 text-[10px] text-slate-500 flex items-center justify-between">
+                        <span>MAC: {iface.mac || 'N/A'}</span>
+                        <span className={iface.isUp ? 'text-emerald-400' : 'text-slate-500'}>
+                          {iface.isUp ? 'UP' : 'DOWN'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Form Fields with Inline Guidance */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Server URL (Advertised)</label>
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                Server URL (Advertised)
+              </label>
               <input
                 type="text"
                 value={settings.general.serverUrl}
@@ -1706,12 +1882,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     general: { ...settings.general, serverUrl: e.target.value },
                   })
                 }
+                placeholder="http://192.168.50.1:8080"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                The HTTP endpoint used by booting nodes to stream <code>vmlinuz</code> and <code>initramfs.img</code>. Must match this appliance&apos;s IP on the provisioning interface.
+              </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Provisioning Interface</label>
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                Provisioning Interface
+              </label>
               <input
                 type="text"
                 value={settings.general.provisioningInterface}
@@ -1721,12 +1903,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     general: { ...settings.general, provisioningInterface: e.target.value },
                   })
                 }
+                placeholder="ens192"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                Network adapter bound to the PXE broadcast domain (e.g. <code>ens192</code> on VMware, <code>eno1</code> on bare-metal racks).
+              </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
+              <label className="block text-xs font-medium text-slate-200 mb-1">
                 Subnet CIDR (e.g. 192.168.50.0/24)
               </label>
               <input
@@ -1738,12 +1924,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     network: { ...settings.network, subnetCidr: e.target.value },
                   })
                 }
+                placeholder="192.168.50.0/24"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                The IPv4 subnet block managed by RedWolf for bare-metal discovery and PXE leasing.
+              </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Default Gateway</label>
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                Default Gateway
+              </label>
               <input
                 type="text"
                 value={settings.network.gateway}
@@ -1761,12 +1953,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     network: { ...settings.network, gateway: gw, subnetCidr: newSubnet },
                   });
                 }}
+                placeholder="192.168.50.1"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                Default router advertised via DHCP option 3. In isolated VMware LAN segments, point this to RedWolf&apos;s IP.
+              </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">DHCP Range Start</label>
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                DHCP Range Start
+              </label>
               <input
                 type="text"
                 value={settings.network.dhcpRangeStart}
@@ -1784,12 +1982,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     network: { ...settings.network, dhcpRangeStart: val, subnetCidr: newSubnet },
                   });
                 }}
+                placeholder="192.168.50.100"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                Lower bound of dynamically assigned client leases. RedWolf server IP must sit outside this range.
+              </p>
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">DHCP Range End</label>
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                DHCP Range End
+              </label>
               <input
                 type="text"
                 value={settings.network.dhcpRangeEnd}
@@ -1799,18 +2003,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     network: { ...settings.network, dhcpRangeEnd: e.target.value },
                   })
                 }
+                placeholder="192.168.50.200"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                Upper bound of dynamic client leases.
+              </p>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">DNS Nameservers (comma-separated)</label>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-slate-200 mb-1">
+                DNS Nameservers (comma-separated)
+              </label>
               <input
                 type="text"
                 value={dnsInput}
                 onChange={(e) => setDnsInput(e.target.value)}
+                placeholder="1.1.1.1, 8.8.8.8"
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
+              <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                DNS resolvers delivered via DHCP option 6 to discovered machines.
+              </p>
             </div>
           </div>
         </div>

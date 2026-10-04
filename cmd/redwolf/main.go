@@ -120,6 +120,10 @@ func main() {
 		serverURL = initSettings.General.ServerURL
 		slog.Info("using server URL from persisted settings", "url", serverURL)
 	}
+	if initSettings != nil && initSettings.General.ProvisioningInterface != "" && (os.Getenv("REDWOLF_PROVISIONING_INTERFACE") == "" || provIface == "eth0") {
+		provIface = initSettings.General.ProvisioningInterface
+		slog.Info("using provisioning interface from persisted settings", "interface", provIface)
+	}
 	var netCfg domain.NetworkSettings
 	if initSettings != nil {
 		netCfg = initSettings.Network

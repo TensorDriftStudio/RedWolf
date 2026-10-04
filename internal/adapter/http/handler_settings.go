@@ -2,12 +2,22 @@ package http
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
 	"github.com/tensordriftstudio/redwolf/internal/port"
 	"github.com/tensordriftstudio/redwolf/internal/service"
 )
+
+// HostInterfaceInfo represents a detected physical or virtual network interface on the appliance.
+type HostInterfaceInfo struct {
+	Name  string   `json:"name"`
+	MAC   string   `json:"mac"`
+	IPs   []string `json:"ips"`
+	IsUp  bool     `json:"isUp"`
+	Flags string   `json:"flags"`
+}
 
 // SettingsHandler manages HTTP endpoints for system settings and directory diagnostics.
 type SettingsHandler struct {
@@ -92,5 +102,38 @@ func (h *SettingsHandler) TestDirectory(w http.ResponseWriter, r *http.Request) 
 	}
 
 	result := h.settingsSvc.TestDirectory(r.Context(), req)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// GetHostInterfaces handles GET /api/settings/interfaces to assist operator interface selection.
+func (h *SettingsHandler) GetHostInterfaces(w http.ResponseWriter, r *http.Request) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "failed querying host network interfaces: "+err.Error())
+		return
+	}
+
+	var result []HostInterfaceInfo
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		var ips []string
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok {
+				if ipNet.IP.To4() != nil {
+					ips = append(ips, ipNet.String())
+				}
+			}
+		}
+		result = append(result, HostInterfaceInfo{
+			Name:  iface.Name,
+			MAC:   iface.HardwareAddr.String(),
+			IPs:   ips,
+			IsUp:  iface.Flags&net.FlagUp != 0,
+			Flags: iface.Flags.String(),
+		})
+	}
 	writeJSON(w, http.StatusOK, result)
 }

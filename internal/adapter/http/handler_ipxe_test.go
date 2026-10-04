@@ -26,7 +26,7 @@ func TestIPXEHandler_DynamicBootLoopBreaker(t *testing.T) {
 
 	events := adapterEvent.NewBroadcaster()
 	prov := service.NewProvisioner(repo, events)
-	handler := NewIPXEHandler(prov, "http://10.10.100.1:8080")
+	handler := NewIPXEHandler(prov, nil, "http://10.10.100.1:8080")
 
 	// 1. Test unknown MAC -> returns discovery script
 	req := httptest.NewRequest(http.MethodGet, "/boot.ipxe?mac=11:22:33:44:55:66", nil)

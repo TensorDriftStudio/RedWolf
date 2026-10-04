@@ -12,19 +12,28 @@ import (
 
 // IPXEHandler serves dynamic iPXE scripts conditioned on node state to prevent boot loops.
 type IPXEHandler struct {
-	prov      *service.Provisioner
-	serverURL string
+	prov        *service.Provisioner
+	settingsSvc *service.SettingsService
+	serverURL   string
 }
 
 // NewIPXEHandler creates an initialized iPXE endpoint handler.
-func NewIPXEHandler(prov *service.Provisioner, serverURL string) *IPXEHandler {
+func NewIPXEHandler(prov *service.Provisioner, settingsSvc *service.SettingsService, serverURL string) *IPXEHandler {
 	return &IPXEHandler{
-		prov:      prov,
-		serverURL: serverURL,
+		prov:        prov,
+		settingsSvc: settingsSvc,
+		serverURL:   serverURL,
 	}
 }
 
 func (h *IPXEHandler) resolveServerURL(r *http.Request) string {
+	if h.settingsSvc != nil && r != nil {
+		if st, err := h.settingsSvc.GetSettings(r.Context()); err == nil && st != nil && st.General.ServerURL != "" {
+			if !strings.Contains(st.General.ServerURL, "127.0.0.1") && !strings.Contains(st.General.ServerURL, "localhost") {
+				return st.General.ServerURL
+			}
+		}
+	}
 	if h.serverURL != "" && !strings.Contains(h.serverURL, "127.0.0.1") && !strings.Contains(h.serverURL, "localhost") {
 		return h.serverURL
 	}

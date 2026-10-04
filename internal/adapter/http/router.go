@@ -72,7 +72,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	})
 
 	// Dynamic iPXE bootloader script endpoint
-	ipxeHandler := NewIPXEHandler(cfg.Provisioner, cfg.ServerURL)
+	ipxeHandler := NewIPXEHandler(cfg.Provisioner, cfg.SettingsSvc, cfg.ServerURL)
 	r.Get("/boot.ipxe", ipxeHandler.ServeHTTP)
 
 	// Real-time WebSocket event bus
@@ -120,6 +120,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			}
 			r.Get("/", settingsHandler.Get)
 			r.Put("/", settingsHandler.Update)
+			r.Get("/interfaces", settingsHandler.GetHostInterfaces)
 			r.Post("/test-directory", settingsHandler.TestDirectory)
 		})
 	}
