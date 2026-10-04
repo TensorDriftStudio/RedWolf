@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,6 +113,10 @@ func main() {
 
 	// 8. Initialize & Start Managed dnsmasq Supervisor with persisted network settings
 	initSettings, _ := settingsSvc.GetSettings(ctx)
+	if initSettings != nil && initSettings.General.ServerURL != "" && (serverURL == "" || strings.Contains(serverURL, "127.0.0.1") || strings.Contains(serverURL, "localhost")) {
+		serverURL = initSettings.General.ServerURL
+		slog.Info("using server URL from persisted settings", "url", serverURL)
+	}
 	var netCfg domain.NetworkSettings
 	if initSettings != nil {
 		netCfg = initSettings.Network

@@ -24,6 +24,23 @@ func NewIPXEHandler(prov *service.Provisioner, serverURL string) *IPXEHandler {
 	}
 }
 
+func (h *IPXEHandler) resolveServerURL(r *http.Request) string {
+	if h.serverURL != "" && !strings.Contains(h.serverURL, "127.0.0.1") && !strings.Contains(h.serverURL, "localhost") {
+		return h.serverURL
+	}
+	if r != nil && r.Host != "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s://%s", scheme, r.Host)
+	}
+	if h.serverURL != "" {
+		return h.serverURL
+	}
+	return "http://127.0.0.1:8080"
+}
+
 // ServeHTTP inspects the client MAC query parameter and renders the appropriate iPXE script.
 func (h *IPXEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mac := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mac")))
@@ -33,7 +50,7 @@ func (h *IPXEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if mac == "" {
 		slog.WarnContext(ctx, "iPXE boot request without mac query parameter; defaulting to discovery")
-		h.renderDiscoveryScript(w)
+		h.renderDiscoveryScript(w, r)
 		return
 	}
 
@@ -41,11 +58,11 @@ func (h *IPXEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if domain.ErrNodeNotFoundIs(err) {
 			slog.InfoContext(ctx, "unknown node booting via iPXE; streaming discovery agent", "mac", mac)
-			h.renderDiscoveryScript(w)
+			h.renderDiscoveryScript(w, r)
 			return
 		}
 		slog.ErrorContext(ctx, "error querying node by mac in ipxe handler", "mac", mac, "error", err)
-		h.renderDiscoveryScript(w)
+		h.renderDiscoveryScript(w, r)
 		return
 	}
 
@@ -58,13 +75,13 @@ func (h *IPXEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case domain.NodeStatusProvisioning:
 		// Node is actively deploying; stream provisioning ramdisk
-		h.renderProvisioningScript(w, node)
+		h.renderProvisioningScript(w, r, node)
 
 	case domain.NodeStatusDiscovering, domain.NodeStatusReady, domain.NodeStatusError:
 		fallthrough
 	default:
 		// Boot into in-memory discovery agent
-		h.renderDiscoveryScript(w)
+		h.renderDiscoveryScript(w, r)
 	}
 }
 
@@ -80,7 +97,8 @@ exit 1
 	_, _ = w.Write([]byte(script))
 }
 
-func (h *IPXEHandler) renderDiscoveryScript(w http.ResponseWriter) {
+func (h *IPXEHandler) renderDiscoveryScript(w http.ResponseWriter, r *http.Request) {
+	serverURL := h.resolveServerURL(r)
 	script := fmt.Sprintf(`#!ipxe
 echo ========================================================
 echo RedWolf Discovery Agent (In-Memory RAMdisk)
@@ -89,16 +107,17 @@ echo ========================================================
 kernel %s/assets/discovery/vmlinuz console=tty0 console=ttyS0,115200n8 initrd=initramfs.img redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
-`, h.serverURL, h.serverURL, h.serverURL)
+`, serverURL, serverURL, serverURL)
 	_, _ = w.Write([]byte(script))
 }
 
-func (h *IPXEHandler) renderProvisioningScript(w http.ResponseWriter, node *domain.ServerNode) {
+func (h *IPXEHandler) renderProvisioningScript(w http.ResponseWriter, r *http.Request, node *domain.ServerNode) {
 	targetDrive := "/dev/nvme0n1"
 	if node.ProvisioningState != nil && node.ProvisioningState.TargetDrive != "" {
 		targetDrive = node.ProvisioningState.TargetDrive
 	}
 
+	serverURL := h.resolveServerURL(r)
 	script := fmt.Sprintf(`#!ipxe
 echo ========================================================
 echo RedWolf Bare-Metal Provisioning Engine
@@ -108,6 +127,7 @@ echo ========================================================
 kernel %s/assets/discovery/vmlinuz console=tty0 console=ttyS0,115200n8 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
-`, node.ID, targetDrive, h.serverURL, node.ID, h.serverURL, h.serverURL)
+`, node.ID, targetDrive, serverURL, node.ID, serverURL, serverURL)
 	_, _ = w.Write([]byte(script))
 }
+

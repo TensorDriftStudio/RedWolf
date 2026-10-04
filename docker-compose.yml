@@ -12,8 +12,9 @@ services:
       - NET_BIND_SERVICE
       - NET_RAW
     environment:
-      - REDWOLF_HTTP_PORT=8080
-      - REDWOLF_PROVISIONING_INTERFACE=eth0
+      - REDWOLF_HTTP_PORT=${REDWOLF_HTTP_PORT:-8080}
+      - REDWOLF_PROVISIONING_INTERFACE=${REDWOLF_PROVISIONING_INTERFACE:-eth0}
+      - REDWOLF_SERVER_URL=${REDWOLF_SERVER_URL:-}
       - REDWOLF_DB_PATH=/var/lib/redwolf/db/redwolf.db
       - REDWOLF_IMAGE_DIR=/var/lib/redwolf/images
       - REDWOLF_TFTP_DIR=/var/lib/redwolf/tftp

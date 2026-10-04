@@ -40,6 +40,11 @@ if [ -z "$REDWOLF_IP" ]; then
     fi
 fi
 
+if [ -z "$REDWOLF_SERVER_URL" ]; then
+    REDWOLF_SERVER_URL="http://${REDWOLF_IP}:${REDWOLF_HTTP_PORT}"
+fi
+export REDWOLF_SERVER_URL
+
 # Render active dnsmasq.conf from template
 sed -e "s/# interface=eth0/interface=$REDWOLF_PROVISIONING_INTERFACE/" \
     -e "s|# dhcp-boot=tag:ipxe,http://<REDWOLF_IP>:8080/boot.ipxe?mac=\${net0/mac}|dhcp-boot=tag:ipxe,http://$REDWOLF_IP:$REDWOLF_HTTP_PORT/boot.ipxe?mac=\${net0/mac}|" \
