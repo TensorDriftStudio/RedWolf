@@ -41,6 +41,18 @@ mdev -s
 
 # 3. Load Storage, IPMI, and Network Kernel Drivers
 echo "[RedWolf Init] Loading hardware drivers..."
+
+# Ensure /lib/modules matches running kernel release
+KVER=$(uname -r 2>/dev/null || echo "")
+if [ -n "$KVER" ] && [ ! -d "/lib/modules/$KVER" ]; then
+    AVAIL_KVER=$(ls -d /lib/modules/* 2>/dev/null | head -n 1 | xargs -n 1 basename 2>/dev/null || echo "")
+    if [ -n "$AVAIL_KVER" ]; then
+        echo "[RedWolf Init] Linking /lib/modules/$KVER -> /lib/modules/$AVAIL_KVER"
+        ln -sfn "/lib/modules/$AVAIL_KVER" "/lib/modules/$KVER"
+    fi
+fi
+depmod -a 2>/dev/null || true
+
 DRIVERS="
 ipmi_si
 ipmi_devintf
@@ -69,7 +81,9 @@ e1000
 "
 
 for drv in $DRIVERS; do
-    modprobe "$drv" 2>&1 || true
+    if modprobe "$drv" 2>/dev/null; then
+        echo "[RedWolf Init] Loaded driver: $drv"
+    fi
 done
 
 # Coldplug uevents trigger and modalias auto-loading for all bus devices (PCI, USB, etc.)
@@ -101,26 +115,15 @@ for iface_path in /sys/class/net/*; do
     iface=$(basename "$iface_path")
     [ "$iface" = "lo" ] && continue
 
-    carrier=$(cat "$iface_path/carrier" 2>/dev/null || echo "0")
-    if [ "$carrier" = "1" ] || [ "$carrier" = "" ]; then
-        echo "[RedWolf Init] Requesting DHCP lease on $iface..."
-        if udhcpc -i "$iface" -n -q -t 5 -s /usr/share/udhcpc/default.script 2>/dev/null; then
-            dhcp_acquired=1
-            echo "[RedWolf Init] Successfully acquired lease on $iface"
-        fi
+    echo "[RedWolf Init] Requesting DHCP lease on $iface..."
+    if udhcpc -i "$iface" -n -q -t 5 -s /usr/share/udhcpc/default.script 2>&1; then
+        dhcp_acquired=1
+        echo "[RedWolf Init] Successfully acquired lease on $iface"
     fi
 done
 
-# Fallback DHCP pass if no carrier was initially reported
-if [ "$dhcp_acquired" -eq 0 ]; then
-    echo "[RedWolf Init] No carrier detected on primary interfaces; retrying all interfaces..."
-    for iface_path in /sys/class/net/*; do
-        [ -e "$iface_path" ] || continue
-        iface=$(basename "$iface_path")
-        [ "$iface" = "lo" ] && continue
-        udhcpc -i "$iface" -n -q -t 5 -s /usr/share/udhcpc/default.script 2>/dev/null || true
-    done
-fi
+echo "[RedWolf Init] Active network configuration:"
+ip -br addr 2>/dev/null || ip addr 2>/dev/null || true
 
 # 5. Parse kernel command line for RedWolf Core server URL and debug flags
 REDWOLF_SERVER=""

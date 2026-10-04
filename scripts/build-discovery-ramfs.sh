@@ -40,8 +40,9 @@ chmod +x "${REPO_ROOT}/scripts/init.sh"
 echo -e "\n${YELLOW}[1/4] Building discovery ramdisk container (Alpine 3.20 + Linux LTS)...${NC}"
 IMAGE_TAG="redwolf-discovery-builder:latest"
 
-# Build builder image using BuildKit
+# Build builder image using BuildKit without stale layer cache
 DOCKER_BUILDKIT=1 docker build \
+    --no-cache \
     --network=host \
     -f "${REPO_ROOT}/scripts/Dockerfile.discovery" \
     -t "${IMAGE_TAG}" \

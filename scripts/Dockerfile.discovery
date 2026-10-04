@@ -87,17 +87,43 @@ RUN cp -a /bin/* /staging/bin/ && \
     mkdir -p /staging/usr/share/udhcpc && \
     cp -a /usr/share/udhcpc/* /staging/usr/share/udhcpc/
 
+# Strip large consumer wireless/GPU/audio firmware, retaining server NIC and storage firmware
+RUN if [ -d /staging/lib/firmware ]; then \
+        rm -rf /staging/lib/firmware/amdgpu \
+               /staging/lib/firmware/radeon \
+               /staging/lib/firmware/nvidia \
+               /staging/lib/firmware/intel \
+               /staging/lib/firmware/iwlwifi* \
+               /staging/lib/firmware/ath* \
+               /staging/lib/firmware/rtlwifi \
+               /staging/lib/firmware/rtw88 \
+               /staging/lib/firmware/rtw89 \
+               /staging/lib/firmware/brcm \
+               /staging/lib/firmware/mediatek \
+               /staging/lib/firmware/mrvl \
+               /staging/lib/firmware/liquidio \
+               /staging/lib/firmware/netronome \
+               /staging/lib/firmware/qcom \
+               /staging/lib/firmware/inside-secure \
+               /staging/lib/firmware/nxp \
+               /staging/lib/firmware/ti* \
+               /staging/usr/share/doc \
+               /staging/usr/share/man \
+               /staging/usr/share/zoneinfo; \
+    fi
+
 # Copy Linux LTS kernel modules and prune non-server drivers to optimize PXE boot payload
-RUN KVER=$(ls /lib/modules) && \
-    mkdir -p /staging/lib/modules && \
-    cp -a /lib/modules/${KVER} /staging/lib/modules/ && \
-    rm -rf /staging/lib/modules/${KVER}/kernel/sound \
-           /staging/lib/modules/${KVER}/kernel/net/wireless \
-           /staging/lib/modules/${KVER}/kernel/drivers/gpu \
-           /staging/lib/modules/${KVER}/kernel/drivers/media \
-           /staging/lib/modules/${KVER}/kernel/drivers/bluetooth \
-           /staging/lib/modules/${KVER}/kernel/drivers/sound && \
-    depmod -b /staging ${KVER}
+RUN for kdir in /staging/lib/modules/*; do \
+        [ -d "$kdir" ] || continue; \
+        KVER=$(basename "$kdir"); \
+        rm -rf "$kdir/kernel/sound" \
+               "$kdir/kernel/net/wireless" \
+               "$kdir/kernel/drivers/gpu" \
+               "$kdir/kernel/drivers/media" \
+               "$kdir/kernel/drivers/bluetooth" \
+               "$kdir/kernel/drivers/sound"; \
+        depmod -b /staging "${KVER}"; \
+    done
 
 # Install static Go discovery binary
 COPY --from=agent-builder /bin/redwolf-discovery /staging/usr/local/bin/redwolf-discovery
