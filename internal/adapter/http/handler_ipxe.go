@@ -104,10 +104,10 @@ echo ========================================================
 echo RedWolf Discovery Agent (In-Memory RAMdisk)
 echo Streaming kernel and discovery environment over HTTP...
 echo ========================================================
-kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf.server=%s
+kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf_server=%s redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
-`, serverURL, serverURL, serverURL)
+`, serverURL, serverURL, serverURL, serverURL)
 	_, _ = w.Write([]byte(script))
 }
 
@@ -124,10 +124,10 @@ echo RedWolf Bare-Metal Provisioning Engine
 echo Node ID: %s
 echo Target Drive: %s
 echo ========================================================
-kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf.server=%s
+kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf_server=%s redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
-`, node.ID, targetDrive, serverURL, node.ID, serverURL, serverURL)
+`, node.ID, targetDrive, serverURL, node.ID, serverURL, serverURL, serverURL)
 	_, _ = w.Write([]byte(script))
 }
 

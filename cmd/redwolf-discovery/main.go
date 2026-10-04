@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -128,6 +130,17 @@ func resolveServerURL(flagVal string) string {
 			}
 			if strings.HasPrefix(param, "redwolf.server=") {
 				return strings.TrimPrefix(param, "redwolf.server=")
+			}
+		}
+	}
+
+	// Fallback: detect default gateway from system routing table
+	if out, err := exec.Command("ip", "route", "show", "default").Output(); err == nil {
+		fields := strings.Fields(string(out))
+		for i, f := range fields {
+			if f == "via" && i+1 < len(fields) {
+				gw := fields[i+1]
+				return fmt.Sprintf("http://%s:8080", gw)
 			}
 		}
 	}

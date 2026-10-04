@@ -69,7 +69,7 @@ e1000
 "
 
 for drv in $DRIVERS; do
-    modprobe "$drv" 2>/dev/null || true
+    modprobe "$drv" 2>&1 || true
 done
 
 # Coldplug uevents trigger and modalias auto-loading for all bus devices (PCI, USB, etc.)
@@ -126,7 +126,7 @@ fi
 REDWOLF_SERVER=""
 DEBUG_MODE=0
 
-for param in $(cat /proc/cmdline); do
+for param in $(cat /proc/cmdline 2>/dev/null); do
     case "$param" in
         redwolf.server=*)
             REDWOLF_SERVER="${param#redwolf.server=}"
@@ -140,6 +140,18 @@ for param in $(cat /proc/cmdline); do
     esac
 done
 
+# Fallback: auto-derive from network default route or nameserver
+if [ -z "$REDWOLF_SERVER" ]; then
+    GW_IP=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
+    if [ -z "$GW_IP" ]; then
+        GW_IP=$(awk '/nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | head -n 1)
+    fi
+    if [ -n "$GW_IP" ]; then
+        REDWOLF_SERVER="http://${GW_IP}:8080"
+        echo "[RedWolf Init] Auto-detected RedWolf Core Server URL via gateway: $REDWOLF_SERVER"
+    fi
+fi
+
 if [ -n "$REDWOLF_SERVER" ]; then
     echo "[RedWolf Init] RedWolf Core Server URL: $REDWOLF_SERVER"
     export REDWOLF_SERVER
@@ -150,7 +162,11 @@ echo "[RedWolf Init] Launching RedWolf Discovery Agent..."
 EXIT_CODE=0
 
 if [ -x /usr/local/bin/redwolf-discovery ]; then
-    /usr/local/bin/redwolf-discovery
+    if [ -n "$REDWOLF_SERVER" ]; then
+        /usr/local/bin/redwolf-discovery -server "$REDWOLF_SERVER"
+    else
+        /usr/local/bin/redwolf-discovery
+    fi
     EXIT_CODE=$?
     echo "[RedWolf Init] Discovery agent completed with exit code: $EXIT_CODE"
 else
@@ -162,6 +178,12 @@ fi
 if [ "$DEBUG_MODE" -eq 1 ] || [ "$EXIT_CODE" -ne 0 ]; then
     echo ""
     echo "[RedWolf Init] ================= DIAGNOSTIC DUMP ================="
+    echo "[RedWolf Init] Kernel Command Line:"
+    cat /proc/cmdline 2>/dev/null || true
+    echo ""
+    echo "[RedWolf Init] Routing Table:"
+    ip route 2>/dev/null || true
+    echo ""
     echo "[RedWolf Init] Network Interfaces:"
     ip -br link 2>/dev/null || ip link 2>/dev/null || true
     echo ""
