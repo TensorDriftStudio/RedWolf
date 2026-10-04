@@ -199,7 +199,35 @@ func detectRootPartNumber(ctx context.Context, diskPath string, osType ...domain
 		return 1, nil
 	}
 
-	// 2. Explicit root PARTLABEL or LABEL (e.g. AlmaLinux PARTLABEL="root")
+	// 2. Explicit root PARTLABEL or LABEL with a verified filesystem
+	for _, p := range parts {
+		if strings.Contains(strings.ToLower(p.partLabel), "root") || strings.Contains(strings.ToLower(p.label), "root") {
+			if (p.fsType == "xfs" || p.fsType == "ext4" || p.fsType == "btrfs") && p.num > 0 {
+				return p.num, nil
+			}
+		}
+	}
+
+	// 3. Largest xfs or ext4 root filesystem (excluding boot or ESP partitions)
+	var bestNum int
+	var largestSize int64
+	for _, p := range parts {
+		if p.fsType == "xfs" || p.fsType == "ext4" || p.fsType == "btrfs" {
+			if strings.EqualFold(p.label, "boot") || strings.EqualFold(p.partLabel, "boot") ||
+				strings.Contains(strings.ToLower(p.label), "efi") || strings.Contains(strings.ToLower(p.partLabel), "efi") {
+				continue
+			}
+			if p.size > largestSize {
+				largestSize = p.size
+				bestNum = p.num
+			}
+		}
+	}
+	if bestNum > 0 {
+		return bestNum, nil
+	}
+
+	// 4. Explicit root PARTLABEL or LABEL (even without recognized fstype in test mocks)
 	for _, p := range parts {
 		if strings.Contains(strings.ToLower(p.partLabel), "root") || strings.Contains(strings.ToLower(p.label), "root") {
 			if p.num > 0 {
@@ -208,16 +236,14 @@ func detectRootPartNumber(ctx context.Context, diskPath string, osType ...domain
 		}
 	}
 
-	// 3. For AlmaLinux/RHEL standard images, look for partition 4
+	// 5. For AlmaLinux/RHEL standard images, look for partition 4
 	for _, p := range parts {
 		if p.num == 4 {
 			return 4, nil
 		}
 	}
 
-	// 4. Largest xfs or ext4 filesystem
-	var bestNum int
-	var largestSize int64
+	// 6. Largest filesystem overall
 	for _, p := range parts {
 		if (p.fsType == "xfs" || p.fsType == "ext4") && p.size > largestSize {
 			largestSize = p.size
@@ -228,7 +254,7 @@ func detectRootPartNumber(ctx context.Context, diskPath string, osType ...domain
 		return bestNum, nil
 	}
 
-	// 5. Largest partition overall
+	// 7. Largest partition overall
 	for _, p := range parts {
 		if p.size > largestSize {
 			largestSize = p.size

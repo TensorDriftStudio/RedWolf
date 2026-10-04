@@ -22,7 +22,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DEFAULT_VERSION="v1.2.3"
+DEFAULT_VERSION="v1.2.4"
 VERSION="${1:-${REDWOLF_VERSION:-${DEFAULT_VERSION}}}"
 TARGET_DIR="${2:-${REPO_ROOT}/assets/discovery}"
 DATA_DIR="${REPO_ROOT}/data/images/discovery"

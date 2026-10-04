@@ -135,8 +135,12 @@ func syncMemberESPs(ctx context.Context, memberESPs []string, streamTarget strin
 	if err := os.MkdirAll(rootMount, 0755); err != nil {
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, "mount", "-o", "ro", rootPart, rootMount).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed mounting root for ESP sync: %w (output: %s)", err, string(out))
+	var targetOS domain.OperatingSystem
+	if len(osType) > 0 {
+		targetOS = osType[0]
+	}
+	if err := MountTargetFilesystem(ctx, rootPart, rootMount, targetOS, "-o", "ro"); err != nil {
+		return fmt.Errorf("failed mounting root for ESP sync: %w", err)
 	}
 	defer func() {
 		_ = exec.CommandContext(context.Background(), "umount", rootMount).Run()
@@ -350,8 +354,8 @@ func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, rep
 
 	srcRootMount := "/mnt/redwolf-source-root"
 	_ = os.MkdirAll(srcRootMount, 0755)
-	if out, err := exec.CommandContext(ctx, "mount", "-o", "ro", sourceRootPart, srcRootMount).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed mounting source root %s: %w (output: %s)", sourceRootPart, err, string(out))
+	if err := MountTargetFilesystem(ctx, sourceRootPart, srcRootMount, osType, "-o", "ro"); err != nil {
+		return fmt.Errorf("failed mounting source root %s: %w", sourceRootPart, err)
 	}
 	defer func() {
 		_ = exec.CommandContext(context.Background(), "umount", srcRootMount).Run()

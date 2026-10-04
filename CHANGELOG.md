@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.4] - 2026-10-04 (Storage Autodetection & SELinux Relabeling Release)
+
+### Fixed
+- **Filesystem Autodetection & Multi-FS Mount Resilience:**
+  - Introduced `MountTargetFilesystem` with multi-stage filesystem probing (`blkid -s TYPE`, `lsblk -no FSTYPE`) and explicit `-t <fstype>` mount arguments.
+  - Added kernel module autoloading for `xfs`, `ext4`, and `btrfs` alongside dynamic trial fallback across supported filesystem drivers when BusyBox `mount` lacks superblock probing.
+  - Populated `/etc/filesystems` (`ext4`, `xfs`, `btrfs`, `vfat`, `*`) in Alpine discovery RAMdisk (`scripts/init.sh`) to support native kernel filesystem cycling.
+  - Replaced raw mount calls in `syncMemberESPs` and `extractImageToLVM` with `MountTargetFilesystem`.
+- **SELinux Direct Credential Injection & Local Console Login:**
+  - Added automatic creation of `/.autorelabel` in target root filesystem during `DirectInjectSecurityCredentials`.
+  - Resolved local KVM / serial console login failures on AlmaLinux and RHEL distributions caused by missing `shadow_t` SELinux contexts on `/etc/shadow` under `SELINUX=enforcing`.
+- **Partition Selection & EFI Resolution:**
+  - Hardened `findRootPartitionFromJSON` and `detectRootPartNumber` to prioritize verified Linux root filesystem types and ignore `/boot` and `ESP` partitions.
+  - Corrected EFI partition resolution in `detectEFIPartition` and `parseEFIPartitionFromJSON`, ensuring partition 1 EFI system partitions are correctly detected and registered in UEFI NVRAM.
+
+---
+
 ## [1.2.3] - 2026-10-04 (Storage & Partitioning Resilience Release)
 
 ### Fixed

@@ -20,7 +20,9 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-OUTPUT_DIR="${1:-${REPO_ROOT}/assets/discovery}"
+OUTPUT_RAW="${1:-${REPO_ROOT}/assets/discovery}"
+mkdir -p "${OUTPUT_RAW}"
+OUTPUT_DIR="$(cd "${OUTPUT_RAW}" && pwd)"
 DATA_IMAGES_DIR="${REPO_ROOT}/data/images/discovery"
 
 echo -e "${BLUE}================================================================================"

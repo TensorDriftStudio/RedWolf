@@ -40,9 +40,8 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 
 	// Step 2: Mount target rootfs
 	slog.InfoContext(ctx, "mounting root partition", "partition", rootPart, "mountpoint", mountPoint, "os", cfg.OS)
-	mountCmd := exec.CommandContext(ctx, "mount", rootPart, mountPoint)
-	if out, err := mountCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed mounting partition %s to %s: %w (output: %s)", rootPart, mountPoint, err, string(out))
+	if err := MountTargetFilesystem(ctx, rootPart, mountPoint, cfg.OS); err != nil {
+		return fmt.Errorf("failed mounting partition %s to %s: %w", rootPart, mountPoint, err)
 	}
 	defer func() {
 		umountCtx, umountCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -187,6 +186,10 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 			_ = os.WriteFile(authKeysPath, []byte(combined.String()), 0600)
 		}
 	}
+
+	// 4. Ensure SELinux restores correct security context for /etc/shadow and /root/.ssh on first boot
+	autorelabelPath := filepath.Join(mountPoint, ".autorelabel")
+	_ = os.WriteFile(autorelabelPath, []byte(""), 0644)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
@@ -427,7 +430,8 @@ func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.Oper
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
-	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian")
+	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian") || strings.Contains(strings.ToLower(string(targetOS)), "ubuntu")
+	isRHEL := strings.Contains(strings.ToLower(string(targetOS)), "alma") || strings.Contains(strings.ToLower(string(targetOS)), "rhel") || strings.Contains(strings.ToLower(string(targetOS)), "centos") || strings.Contains(strings.ToLower(string(targetOS)), "rocky")
 
 	var data partList
 	if err := json.Unmarshal(out, &data); err != nil {
@@ -455,14 +459,80 @@ func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.Oper
 		return fallbackPartitionPath(realDev, targetOS), nil
 	}
 
-	// 2. Look for explicit root in PARTLABEL or LABEL (e.g. AlmaLinux PARTLABEL="root")
+	// 2. Look for explicit root in PARTLABEL or LABEL with a verified filesystem
+	for _, p := range parts {
+		if strings.Contains(strings.ToLower(p.PartLabel), "root") || strings.Contains(strings.ToLower(p.Label), "root") {
+			if p.FSType == "xfs" || p.FSType == "ext4" || p.FSType == "btrfs" {
+				return p.Path, nil
+			}
+		}
+	}
+
+	// 3. For RHEL/AlmaLinux, look for non-boot XFS root filesystem first
+	if isRHEL {
+		var xfsCandidate string
+		var largestXFS int64
+		for _, p := range parts {
+			if p.FSType == "xfs" {
+				if strings.EqualFold(p.Label, "boot") || strings.EqualFold(p.PartLabel, "boot") ||
+					strings.Contains(strings.ToLower(p.Label), "efi") || strings.Contains(strings.ToLower(p.PartLabel), "efi") {
+					continue
+				}
+				sz, _ := p.Size.Int64()
+				if sz > largestXFS {
+					largestXFS = sz
+					xfsCandidate = p.Path
+				}
+			}
+		}
+		if xfsCandidate != "" {
+			return xfsCandidate, nil
+		}
+
+		// Check explicit root label
+		for _, p := range parts {
+			if strings.Contains(strings.ToLower(p.PartLabel), "root") || strings.Contains(strings.ToLower(p.Label), "root") {
+				return p.Path, nil
+			}
+		}
+
+		// Partition 4 standard in AlmaLinux 8/9 cloud images
+		for _, p := range parts {
+			num := extractTrailingDigits(p.Name)
+			if num == 4 {
+				return p.Path, nil
+			}
+		}
+	}
+
+	// 4. Look for largest xfs or ext4 root filesystem (excluding /boot or ESP partitions)
+	var candidate string
+	var largestSize int64
+	for _, p := range parts {
+		if p.FSType == "xfs" || p.FSType == "ext4" || p.FSType == "btrfs" {
+			if strings.EqualFold(p.Label, "boot") || strings.EqualFold(p.PartLabel, "boot") ||
+				strings.Contains(strings.ToLower(p.Label), "efi") || strings.Contains(strings.ToLower(p.PartLabel), "efi") {
+				continue
+			}
+			size, _ := p.Size.Int64()
+			if size > largestSize {
+				largestSize = size
+				candidate = p.Path
+			}
+		}
+	}
+	if candidate != "" {
+		return candidate, nil
+	}
+
+	// 5. Look for explicit root in PARTLABEL or LABEL (even without recognized fstype in synthetic test mocks)
 	for _, p := range parts {
 		if strings.Contains(strings.ToLower(p.PartLabel), "root") || strings.Contains(strings.ToLower(p.Label), "root") {
 			return p.Path, nil
 		}
 	}
 
-	// 3. For AlmaLinux/RHEL standard cloud images, look for partition 4
+	// 6. For AlmaLinux/RHEL standard cloud images, look for partition 4
 	for _, p := range parts {
 		num := extractTrailingDigits(p.Name)
 		if num == 4 {
@@ -470,9 +540,7 @@ func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.Oper
 		}
 	}
 
-	// 4. Look for largest xfs or ext4 root filesystem
-	var candidate string
-	var largestSize int64
+	// 7. Look for any largest xfs/ext4 partition overall
 	for _, p := range parts {
 		if p.FSType == "xfs" || p.FSType == "ext4" {
 			size, _ := p.Size.Int64()
@@ -486,7 +554,7 @@ func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.Oper
 		return candidate, nil
 	}
 
-	// 5. Fallback to the largest partition overall
+	// 8. Fallback to the largest partition overall
 	for _, p := range parts {
 		size, _ := p.Size.Int64()
 		if size > largestSize {
@@ -521,10 +589,119 @@ func fallbackPartitionPath(realDev string, osType ...domain.OperatingSystem) str
 	if _, err := os.Stat(part4); err == nil {
 		return part4
 	}
+	part3 := resolvePartitionPath(realDev, 3)
+	if _, err := os.Stat(part3); err == nil {
+		return part3
+	}
 	part1 := resolvePartitionPath(realDev, 1)
 	if _, err := os.Stat(part1); err == nil {
 		return part1
 	}
 	return resolvePartitionPath(realDev, 4)
 }
+
+// MountTargetFilesystem mounts a target root/boot filesystem using robust filesystem detection,
+// explicit filesystem type flags (-t xfs, -t ext4, -t btrfs), and dynamic kernel module loading.
+// This prevents "no valid filesystem type specified" errors on minimal BusyBox initramfs environments.
+func MountTargetFilesystem(ctx context.Context, partPath string, mountPoint string, targetOS domain.OperatingSystem, extraArgs ...string) error {
+	// 1. Proactively ensure filesystem kernel modules are loaded
+	_ = exec.CommandContext(ctx, "modprobe", "xfs").Run()
+	_ = exec.CommandContext(ctx, "modprobe", "ext4").Run()
+	_ = exec.CommandContext(ctx, "modprobe", "btrfs").Run()
+
+	// 2. Ensure /etc/filesystems exists with enterprise filesystem search order for BusyBox mount
+	_ = os.WriteFile("/etc/filesystems", []byte("ext4\nxfs\nbtrfs\nvfat\n*\n"), 0644)
+
+	// Settle devices before probing and mounting
+	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
+	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+
+	// 3. Detect filesystem type via blkid / lsblk
+	detectedFSType := probeDeviceFSType(ctx, partPath)
+
+	// 4. Assemble candidate filesystem types in order of likelihood
+	var candidates []string
+	if detectedFSType != "" {
+		candidates = append(candidates, detectedFSType)
+	}
+
+	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian") || strings.Contains(strings.ToLower(string(targetOS)), "ubuntu")
+	isRHEL := strings.Contains(strings.ToLower(string(targetOS)), "alma") || strings.Contains(strings.ToLower(string(targetOS)), "rhel") || strings.Contains(strings.ToLower(string(targetOS)), "centos") || strings.Contains(strings.ToLower(string(targetOS)), "rocky")
+
+	if isRHEL {
+		candidates = append(candidates, "xfs", "ext4", "btrfs")
+	} else if isDebian {
+		candidates = append(candidates, "ext4", "xfs", "btrfs")
+	} else {
+		candidates = append(candidates, "xfs", "ext4", "btrfs")
+	}
+	candidates = append(candidates, "") // Fallback to auto-mount without -t
+
+	// Deduplicate candidates preserving priority order
+	seen := make(map[string]bool)
+	var uniqueCandidates []string
+	for _, c := range candidates {
+		if !seen[c] {
+			seen[c] = true
+			uniqueCandidates = append(uniqueCandidates, c)
+		}
+	}
+
+	var lastErr error
+	var lastOutput string
+	for _, fs := range uniqueCandidates {
+		var args []string
+		args = append(args, extraArgs...)
+		if fs != "" {
+			args = append(args, "-t", fs)
+		}
+		args = append(args, partPath, mountPoint)
+
+		mountCmd := exec.CommandContext(ctx, "mount", args...)
+		out, err := mountCmd.CombinedOutput()
+		if err == nil {
+			slog.InfoContext(ctx, "target filesystem mounted successfully",
+				"partition", partPath,
+				"mountpoint", mountPoint,
+				"fstype", fs,
+				"detected_type", detectedFSType,
+			)
+			return nil
+		}
+		lastErr = err
+		lastOutput = strings.TrimSpace(string(out))
+		slog.DebugContext(ctx, "candidate mount attempt failed",
+			"partition", partPath,
+			"fstype", fs,
+			"error", err,
+			"output", lastOutput,
+		)
+	}
+
+	return fmt.Errorf("failed mounting partition %s to %s with attempted filesystems %v: %w (output: %s)",
+		partPath, mountPoint, uniqueCandidates, lastErr, lastOutput)
+}
+
+func probeDeviceFSType(ctx context.Context, devicePath string) string {
+	// First try blkid for direct superblock inspection
+	cmd := exec.CommandContext(ctx, "blkid", "-s", "TYPE", "-o", "value", devicePath)
+	if out, err := cmd.Output(); err == nil {
+		fs := strings.TrimSpace(string(out))
+		if fs != "" {
+			return fs
+		}
+	}
+
+	// Fallback to lsblk
+	lsCmd := exec.CommandContext(ctx, "lsblk", "-n", "-o", "FSTYPE", devicePath)
+	if out, err := lsCmd.Output(); err == nil {
+		fs := strings.TrimSpace(string(out))
+		if fs != "" {
+			return fs
+		}
+	}
+
+	return ""
+}
+
 

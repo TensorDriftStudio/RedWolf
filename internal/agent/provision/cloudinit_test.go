@@ -245,6 +245,109 @@ func TestFindRootPartition_PartLabelRoot(t *testing.T) {
 	}
 }
 
+func TestFindRootPartition_AlmaLinux10_Standard(t *testing.T) {
+	// Official AlmaLinux 10 GenericCloud NVMe layout
+	alma10JSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 1048576,
+						"type": "part",
+						"partlabel": "biosboot"
+					},
+					{
+						"name": "nvme0n1p2",
+						"path": "/dev/nvme0n1p2",
+						"size": 209715200,
+						"type": "part",
+						"partlabel": "EFI System Partition",
+						"fstype": "vfat"
+					},
+					{
+						"name": "nvme0n1p3",
+						"path": "/dev/nvme0n1p3",
+						"size": 1073741824,
+						"type": "part",
+						"partlabel": "boot",
+						"fstype": "xfs"
+					},
+					{
+						"name": "nvme0n1p4",
+						"path": "/dev/nvme0n1p4",
+						"size": 9448882176,
+						"type": "part",
+						"partlabel": "root",
+						"fstype": "xfs"
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(alma10JSON, "/dev/nvme0n1", domain.OSAlmaLinux10)
+	if err != nil {
+		t.Fatalf("failed finding AlmaLinux 10 root partition: %v", err)
+	}
+	if part != "/dev/nvme0n1p4" {
+		t.Errorf("expected /dev/nvme0n1p4 for AlmaLinux 10, got %s", part)
+	}
+}
+
+func TestFindRootPartition_AlmaLinux10_UEFIOnly_3Partitions(t *testing.T) {
+	// UEFI-only AlmaLinux 10 layout (no biosboot: p1=ESP, p2=boot, p3=root)
+	alma10UEFIJSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 629145600,
+						"type": "part",
+						"partlabel": "EFI System Partition",
+						"fstype": "vfat"
+					},
+					{
+						"name": "nvme0n1p2",
+						"path": "/dev/nvme0n1p2",
+						"size": 1073741824,
+						"type": "part",
+						"partlabel": "boot",
+						"fstype": "xfs"
+					},
+					{
+						"name": "nvme0n1p3",
+						"path": "/dev/nvme0n1p3",
+						"size": 9448882176,
+						"type": "part",
+						"partlabel": "root",
+						"fstype": "xfs"
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(alma10UEFIJSON, "/dev/nvme0n1", domain.OSAlmaLinux10)
+	if err != nil {
+		t.Fatalf("failed finding AlmaLinux 10 3-partition root: %v", err)
+	}
+	if part != "/dev/nvme0n1p3" {
+		t.Errorf("expected /dev/nvme0n1p3 for AlmaLinux 10 3-partition layout, got %s", part)
+	}
+}
+
 func TestFindRootPartition_Debian13_NVMe(t *testing.T) {
 	// Official Debian 13 GenericCloud on NVMe (partitions 1, 14, 15, no "root" in labels)
 	debian13JSON := []byte(`{

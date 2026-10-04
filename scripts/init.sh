@@ -91,6 +91,10 @@ for drv in $DRIVERS; do
     fi
 done
 
+# Prepopulate /etc/filesystems with enterprise filesystem types for BusyBox mount
+mkdir -p /etc
+printf "ext4\nxfs\nbtrfs\nvfat\n*\n" > /etc/filesystems 2>/dev/null || true
+
 # Ensure device-mapper control node and LVM nodes are initialized
 mkdir -p /dev/mapper
 if [ -e /dev/misc/device-mapper ] && [ ! -e /dev/mapper/control ]; then

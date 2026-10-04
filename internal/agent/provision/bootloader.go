@@ -195,10 +195,10 @@ func detectEFIPartition(ctx context.Context, realDisk string, osType ...domain.O
 	}
 
 	partNum := parseEFIPartitionFromJSON(out)
-	if partNum == 1 && defaultPart != 1 {
-		return defaultPart
+	if partNum > 0 {
+		return partNum
 	}
-	return partNum
+	return defaultPart
 }
 
 func parseEFIPartitionFromJSON(out []byte) int {
@@ -215,7 +215,7 @@ func parseEFIPartitionFromJSON(out []byte) int {
 		BlockDevices []efiPart `json:"blockdevices"`
 	}
 	if err := json.Unmarshal(out, &data); err != nil {
-		return 1
+		return 0
 	}
 
 	var parts []efiPart
@@ -245,7 +245,7 @@ func parseEFIPartitionFromJSON(out []byte) int {
 		}
 	}
 
-	return 1
+	return 0
 }
 
 func extractTrailingDigits(s string) int {
