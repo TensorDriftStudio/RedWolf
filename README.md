@@ -62,11 +62,15 @@ sequenceDiagram
 
 ## 📖 Step-by-Step Operator Guide
 
-Follow these steps to deploy the RedWolf appliance and provision bare-metal servers or virtual machines from scratch.
+Follow these steps to deploy the RedWolf appliance, configure networking and operating system images, discover physical hardware, and provision servers with enterprise storage layouts.
 
-### Step 1: Deploy the RedWolf Appliance
+---
 
-RedWolf is published as an official, pre-built production container on Docker Hub ([`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)). RedWolf requires `network_mode: host` (or Macvlan) to observe Layer-2 DHCP discovery broadcasts on the provisioning interface.
+### Step 1: Deploy the RedWolf Appliance (Zero-Build)
+
+RedWolf is published as an official, pre-built production container on Docker Hub ([`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)). The official image includes the compiled React 19 dashboard, Go backend engine, and **pre-packaged Alpine discovery boot assets** (`initramfs.img` and `vmlinuz`), requiring **no local compilation**.
+
+RedWolf requires `network_mode: host` (or Macvlan) to observe Layer-2 DHCP discovery broadcasts on the provisioning network interface.
 
 #### Method A: Docker Compose (Recommended)
 ```bash
@@ -74,26 +78,28 @@ RedWolf is published as an official, pre-built production container on Docker Hu
 git clone https://github.com/TensorDriftStudio/RedWolf.git
 cd RedWolf
 
-# 2. Pull the official image and start the appliance container
+# 2. Pull official pre-built image from Docker Hub
 docker compose pull
+
+# 3. Start the RedWolf appliance container
 docker compose up -d
 
-# 3. Check service health and verify logs
+# 4. Verify service health and active version
 docker compose ps
 curl -s http://localhost:8080/healthz
 curl -s http://localhost:8080/api/version
 ```
 
 #### Method B: Standalone Docker Run
-To run the pre-built image directly without cloning the repository:
+To run the appliance directly without cloning the repository:
 ```bash
-# Pull the latest official appliance image
+# Pull official release image
 docker pull wolverandover/redwolf:latest
 
-# Create host persistent data directories
+# Create persistent storage directories
 mkdir -p data/db data/images data/tftp
 
-# Launch container with host networking & required network capabilities
+# Launch container with host networking and net capabilities
 docker run -d \
   --name redwolf-core \
   --restart unless-stopped \
@@ -112,108 +118,191 @@ docker run -d \
   wolverandover/redwolf:latest
 ```
 
+> [!TIP]
+> **Discovery Boot Assets Automation:**
+> The discovery RAMdisk (`initramfs.img` ~215MB) and kernel (`vmlinuz` ~11MB) are already embedded inside the Docker image and synchronized to `/var/lib/redwolf/images/discovery/` on startup.
+> For offline or air-gapped environments, you can manually fetch or update verified prebuilt assets at any time via:
+> ```bash
+> ./scripts/download-discovery.sh
+> ```
+
 > [!NOTE]
-> For installations where the provisioning network is isolated on a dedicated physical interface (e.g. `eth1`), use the Macvlan compose profile:
+> For isolated secondary provisioning interfaces (e.g. `eth1`), use the Macvlan compose profile:
 > `docker compose -f docker-compose.macvlan.yml up -d`
 > 
-> For active frontend UI development with instant Hot Module Replacement (HMR) inside Docker:
-> `docker compose -f docker-compose.dev.yml up --build` (Web UI live at `http://localhost:5173`)
+> For active frontend UI development with hot-reload (HMR):
+> `docker compose -f docker-compose.dev.yml up --build` (Web UI at `http://localhost:5173`)
 
 ---
 
-### Step 2: Access the RedWolf GUI
+### Step 2: Sign In & Authentication Configuration
 
-Open your browser and navigate to:
+Open your web browser and navigate to:
 ```text
 http://<APPLIANCE_IP>:8080
 ```
 
-1. **Authentication:** Choose your authentication provider on the login screen:
+1. **Select Identity Provider:**
    - **Local Admin:** Built-in appliance administrator credentials.
-   - **OpenLDAP / FreeIPA:** Authenticates against corporate RFC 4511 directories.
+   - **OpenLDAP / FreeIPA:** Authenticates against corporate RFC 4511 directory services.
    - **Active Directory:** Authenticates against Windows AD DS using LDAPS (port 636).
 2. Click **Sign In to RedWolf GUI** to enter the Fleet Management dashboard.
 
 ---
 
-### Step 3: Configure Network & OS Image Catalog
+### Step 3: Configure Network Subnet & DHCP Engine
 
-Before booting servers, configure your subnet parameters and download target operating systems:
+Before booting bare-metal servers, verify your provisioning network configuration:
 
-1. **Open Settings:** Click the **Settings** icon in the top navigation bar.
-2. **PXE Engine & Network:**
-   - Under the **PXE Engine & Network** tab, verify or update the Subnet CIDR (e.g. `192.168.0.0/24`), DHCP Range (`192.168.0.100` - `192.168.0.200`), and Gateway.
-   - Click **Save Configuration**. The internal `dnsmasq` service reloads dynamically without dropping connections.
-3. **Distribution Mirror & OS Images:**
-   - Navigate to the **Distribution Mirror & Cache** tab.
-   - Click **Download Image** next to **AlmaLinux 9** or **Debian 12**.
-   - RedWolf downloads official cloud raw images asynchronously and verifies checksums. Live progress is displayed directly in the GUI.
-   *(Alternatively, run `bash scripts/download-images.sh --os almalinux9` via CLI).*
+1. Click the **Settings** icon in the top navigation bar.
+2. Select the **PXE Engine & Network** tab:
+   - **Provisioning Interface:** Select your physical provisioning NIC (e.g. `eth0` or `enp3s0`).
+   - **Subnet CIDR:** Enter your rack subnet (e.g. `192.168.10.0/24`).
+   - **DHCP Pool Range:** Set the discovery address allocation range (e.g. `192.168.10.100` – `192.168.10.200`).
+   - **Gateway & DNS:** Specify default router and upstream nameservers (e.g. `1.1.1.1, 8.8.8.8`).
+3. Click **Save Configuration**. The internal `dnsmasq` service dynamically reloads its configuration with zero downtime.
 
 ---
 
-### Step 4: Hardware Racking & Zero-Touch Discovery
+### Step 4: Download & Pre-Cache Operating System Images
 
-1. **Physical Connections:**
-   - Connect **Power** to the server power supplies.
-   - Connect the server's **Dedicated BMC RJ-45 Port** to your management network.
-   - Connect the primary **Provisioning NIC (NIC 1)** to the RedWolf provisioning subnet.
-2. **Power On:** Power on the node. Ensure UEFI/BIOS boot priority has **Network (PXE)** enabled.
-3. **Automated Discovery Process:**
-   - RedWolf DHCP responds with the iPXE bootloader (`ipxe.efi`).
-   - The node boots the Alpine-based `redwolf-discovery` agent entirely in RAM.
-   - The agent reads chassis DMI (Dell Service Tag, Supermicro / ASRock serial), enumerates all CPUs, DIMMs, network cards, and disks (NVMe, SAS, SATA, BOSS, SATADOM).
-   - In-band KCS (`/dev/ipmi0`) configures BMC Dedicated port mode, enables DHCP, and escrows credentials into RedWolf's encrypted AES-256-GCM vault.
+RedWolf provisions bare-metal servers using official cloud raw images (`.raw.zstd`). Images must be downloaded before deployment (non-cached images are locked in the Provisioning Wizard to prevent deployment failures).
+
+#### Method A: Download via Web Dashboard (One-Click)
+1. In **Settings**, navigate to the **Operating System Images** tab.
+2. Choose your desired target distribution:
+   - **AlmaLinux 10 LTS** (Next-Gen Enterprise LTS)
+   - **AlmaLinux 9 LTS** (Enterprise LTS)
+   - **Debian 13 (Trixie) LTS** (Next-Gen Debian LTS)
+   - **Debian 12 (Bookworm) LTS** (Enterprise LTS)
+   - **Ubuntu 24.04 LTS / 22.04 LTS**
+3. Click **Download Image**. RedWolf streams the official raw image asynchronously, decompresses and prepares sparse transfer blocks, and verifies SHA256 checksums with real-time UI progress bars.
+
+#### Method B: Download via CLI
+```bash
+# Download specific distributions:
+./scripts/download-images.sh almalinux-10 debian-13
+
+# Or download all supported systems at once:
+./scripts/download-images.sh all
+```
+
+---
+
+### Step 5: Hardware Racking & Zero-Touch Discovery
+
+1. **Physical Cabling:**
+   - Connect **Power** to the server redundant power supplies.
+   - Connect the server's **Dedicated BMC RJ-45 Port** to your out-of-band management switch.
+   - Connect the primary **Provisioning NIC (Port 1)** to the RedWolf Layer-2 provisioning VLAN/switch.
+2. **Power On & Network Boot:**
+   - Power on the server. Ensure UEFI/BIOS boot priority is set to **Network (PXE)**.
+3. **Automated Discovery Flow:**
+   - RedWolf DHCP hands out an IP and chains to `ipxe.efi`.
+   - The server boots the lightweight Alpine Linux discovery agent (`redwolf-discovery`) into RAM.
+   - The agent reads chassis DMI (Dell Service Tag, Supermicro / ASRock serial), enumerates all CPUs, RAM DIMMs, network interfaces, and storage drives.
+   - The agent interfaces with the onboard BMC via in-band KCS (`/dev/ipmi0`), sets the management interface to **Dedicated** port mode, requests DHCP, and escrows credentials into RedWolf's encrypted AES-256-GCM vault.
 4. **Appears in Fleet Dashboard:**
-   - Within 60–90 seconds, the node transitions to **"Ready for Provisioning"** in the RedWolf GUI.
+   - In 60–90 seconds, the node appears on the dashboard with status **"Ready for Provisioning"**.
 
 ---
 
-### Step 5: Provision the Operating System
+### Step 6: Provision Operating System & Storage Layouts
 
-1. In the RedWolf GUI Fleet view, click **Provision OS** on the discovered node.
-2. **Step 1 - Operating System:** Select target OS (e.g., *AlmaLinux 9* or *Debian 12*).
-3. **Step 2 - Target Drive Selection:**
-   - Select the target storage disk from the detected hardware list (e.g. `Dell BOSS RAID1`, `Samsung PM9A3 NVMe`, or SAS drive).
-   - Devices are referenced by immutable identifiers (`/dev/disk/by-id/...`), preventing accidental drive overwrites.
-4. **Step 3 - Cloud-Init & Credentials:**
-   - Specify hostname, admin username, root password, and optional SSH authorized keys.
-   - Select network configuration: **DHCP** or **Static IP** (automatically bound to the detected network card MAC address).
-5. **Step 4 - Deploy:**
-   - Review configuration and click **Start Deployment**.
-   - RedWolf streams the raw compressed image, automatically fixes the secondary GPT boundary (`sgdisk -e`), mounts root in RAM, and injects NoCloud Cloud-Init configuration (`user-data`, `meta-data`, and MAC-matched `network-config`).
-   - The node reboots directly into the production OS.
+Click **Provision OS** on any discovered server to open the multi-step deployment wizard:
+
+#### 1. Operating System Selection
+- Select an active, downloaded operating system (e.g. *AlmaLinux 10* or *Debian 13*).
+
+#### 2. Storage Layout Engine Selection
+Choose between three deterministic storage architectures:
+
+* **Option A: Standard Partitioning (Auto-Expanding)**
+  - Streams the official cloud image directly to the selected disk.
+  - Automatically invokes `parted resizepart` and `partprobe` to extend the root partition to 100% of the drive capacity.
+  - Mounts root in RAM and triggers online filesystem expansion (`xfs_growfs` for XFS on AlmaLinux, `resize2fs` for ext4 on Debian).
+
+* **Option B: Logical Volume Manager (LVM)**
+  - Configures standard GPT layout: 512MB EFI System Partition (`ESP`), 1024MB `/boot`, and LVM Physical Volume (`8e00`).
+  - Creates Volume Group `vg_system` with Logical Volumes:
+    - `lv_root` (`/`)
+    - `lv_var` (`/var`)
+    - `lv_home` (`/home`)
+    - `lv_tmp` (`/tmp`)
+    - `lv_swap` (`swap`)
+  - **Capacity Allocator & Auto-Fit:** Use the interactive drive capacity bar to customize sizes, or click **"Auto-fit to Drive"** to proportionally scale all partitions to match the exact size of your drive without over-allocation.
+
+* **Option C: Software RAID (`mdadm`)**
+  - Select 2 or more storage drives (NVMe SSDs, SAS, or SATA drives).
+  - Select RAID level: **RAID 0** (Striping), **RAID 1** (Mirroring), **RAID 5** (Distributed Parity), or **RAID 10** (Striped Mirrors).
+  - Formats redundant FAT32 ESPs on all member drives and synchronizes dual `mdadm.conf` paths for both RHEL/AlmaLinux (`/etc/mdadm.conf`) and Debian/Ubuntu (`/etc/mdadm/mdadm.conf`).
+  - Registers redundant UEFI boot entries so the server boots seamlessly even if Drive 0 fails.
+
+#### 3. Target Drive Selection
+- Select target drive(s) from the detected hardware inventory (e.g. `Dell BOSS RAID1`, `Samsung PM9A3 NVMe`, `Supermicro SATADOM`).
+- Drives are bound by immutable identifiers (`/dev/disk/by-id/...`), eliminating blind `/dev/sda` drive corruption.
+
+#### 4. Cloud-Init Credentials & Network Configuration
+- Set server hostname, admin user, root password, and SSH public keys.
+- Network Mode:
+  - **DHCP:** Standard automatic assignment.
+  - **Static IP:** IP address, netmask, gateway, and DNS servers (automatically bound to the physical network card MAC address via Cloud-Init `match: macaddress: "..."`).
+
+#### 5. Automated Deployment
+- Click **Start Deployment**.
+- RedWolf streams the OS image, applies the chosen partition/LVM/RAID configuration, injects the NoCloud Cloud-Init seed (`/var/lib/cloud/seed/nocloud/`), sets disk boot priority via `efibootmgr`, and reboots directly into the production OS.
 
 ---
 
-### Step 6: Post-Deployment Management & Lifecycle Actions
+### Step 7: Post-Deployment Management & BMC Control
 
-From the RedWolf GUI, select any node to open the **Hardware Telemetry & Control Drawer**:
+Click on any server in the Fleet view to open the **Hardware Telemetry & Control Drawer**:
 
-* **BMC Management & Console:**
-  - View the discovered BMC IP address. Click **Open Console** to launch the vendor's web interface (iDRAC / MegaRAC / ASPEED).
+* **Out-of-Band BMC Console:**
+  - View the assigned BMC IP address.
+  - Click **Open Console** to launch the vendor web GUI (Dell iDRAC, Supermicro IPMI/MegaRAC, ASRock Rack ASPEED).
   - Reveal or rotate escrowed BMC passwords on demand.
-  - Execute remote chassis power commands (**Power On**, **Power Off**, **Power Cycle** via IPMI/Redfish).
+  - Perform out-of-band power operations (**Power On**, **Power Off**, **Power Cycle**, **Graceful Shutdown**).
 * **Reset Node State:**
-  - Click **Reset State** to clear a stuck deployment or re-trigger discovery.
+  - Click **Reset State** to re-trigger discovery or clear a completed deployment.
 * **Decommission Node:**
-  - Click **Decommission** to remove obsolete or replaced hardware from inventory.
+  - Click **Decommission** to remove obsolete hardware records from the database.
 
 ---
 
-### Step 7: Testing Without Physical Hardware (Node Simulator)
+### Step 8: Updating an Existing RedWolf Server
 
-You can simulate bare-metal nodes and test the complete workflow without physical servers:
+To update an active RedWolf installation to the latest version with zero manual compilation:
 
 ```bash
-# Simulate a Dell PowerEdge R640 node sending live telemetry
+cd /path/to/RedWolf
+
+# 1. Pull the latest code and configuration from GitHub
+git pull origin main
+
+# 2. Pull the latest prebuilt appliance image from Docker Hub
+docker compose pull
+
+# 3. Restart RedWolf with the updated engine
+docker compose up -d
+```
+All persistent databases (`data/db`), OS images (`data/images`), and network configurations remain completely preserved.
+
+---
+
+### Step 9: Testing Without Physical Hardware (Node Simulator)
+
+Test the complete RedWolf discovery and provisioning pipeline without physical bare-metal hardware:
+
+```bash
+# Simulate a Dell PowerEdge R640 node sending live hardware telemetry:
 bash scripts/simulate-node.sh --vendor dell --count 1
 
-# Simulate a Supermicro or ASRock Rack server
+# Simulate Supermicro or ASRock Rack servers:
 bash scripts/simulate-node.sh --vendor supermicro --count 1
 bash scripts/simulate-node.sh --vendor asrock --count 1
 
-# Launch an actual QEMU VM booting the real discovery kernel & initramfs
+# Launch an actual QEMU virtual machine booting the real discovery RAMdisk:
 bash scripts/simulate-node.sh --mode qemu --vendor dell
 ```
 
