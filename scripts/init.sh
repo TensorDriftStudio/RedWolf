@@ -54,6 +54,11 @@ fi
 depmod -a 2>/dev/null || true
 
 DRIVERS="
+dm_mod
+xfs
+ext4
+vfat
+loop
 ipmi_si
 ipmi_devintf
 ipmi_msghandler
@@ -85,6 +90,13 @@ for drv in $DRIVERS; do
         echo "[RedWolf Init] Loaded driver: $drv"
     fi
 done
+
+# Ensure device-mapper control node and LVM nodes are initialized
+mkdir -p /dev/mapper
+if [ -e /dev/misc/device-mapper ] && [ ! -e /dev/mapper/control ]; then
+    ln -sf /dev/misc/device-mapper /dev/mapper/control
+fi
+vgmknodes 2>/dev/null || true
 
 # Coldplug uevents trigger and modalias auto-loading for all bus devices (PCI, USB, etc.)
 if [ -d /sys/bus ]; then

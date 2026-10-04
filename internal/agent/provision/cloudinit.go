@@ -63,6 +63,11 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		return fmt.Errorf("failed injecting NoCloud seeds: %w", err)
 	}
 
+	// Step 3.1: Directly inject credentials into rootfs (/etc/shadow, /etc/ssh, /root/.ssh)
+	if err := DirectInjectSecurityCredentials(mountPoint, cfg); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning directly injecting credentials into rootfs", "error", err)
+	}
+
 	// Step 7: Inject mdadm.conf if Software RAID is configured
 	if cfg.Storage.RAIDLevel == domain.RAIDLevel1 || cfg.Storage.RAIDLevel == domain.RAIDLevel0 || cfg.Storage.RAIDLevel == domain.RAIDLevel10 || cfg.PartitioningPreset == domain.PartitioningRAID1 {
 		if err := InjectMDADMConfig(ctx, mountPoint); err != nil {
@@ -77,6 +82,110 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		"boot_mac", bootMAC,
 	)
 
+	return nil
+}
+
+// DirectInjectSecurityCredentials directly sets root password in /etc/shadow, injects SSH keys into /root/.ssh,
+// and ensures OpenSSH permits root password logins, guaranteeing immediate access without relying solely on cloud-init.
+func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentConfig) error {
+	var errs []string
+
+	// 1. Direct /etc/shadow injection
+	if cfg.RootPassword != "" {
+		shadowPath := filepath.Join(mountPoint, "etc", "shadow")
+		hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
+		daysSinceEpoch := time.Now().Unix() / 86400
+
+		if data, err := os.ReadFile(shadowPath); err == nil {
+			lines := strings.Split(string(data), "\n")
+			found := false
+			for i, line := range lines {
+				if strings.HasPrefix(line, "root:") {
+					parts := strings.Split(line, ":")
+					if len(parts) >= 2 {
+						parts[1] = hashedPass
+						if len(parts) > 2 && (parts[2] == "" || parts[2] == "0") {
+							parts[2] = fmt.Sprintf("%d", daysSinceEpoch)
+						}
+						if len(parts) > 4 && parts[4] == "" {
+							parts[4] = "99999"
+						}
+						lines[i] = strings.Join(parts, ":")
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				rootEntry := fmt.Sprintf("root:%s:%d:0:99999:7:::", hashedPass, daysSinceEpoch)
+				lines = append(lines, rootEntry)
+			}
+			newContent := strings.Join(lines, "\n")
+			if err := os.WriteFile(shadowPath, []byte(newContent), 0600); err != nil {
+				errs = append(errs, fmt.Sprintf("failed writing /etc/shadow: %v", err))
+			}
+		} else {
+			_ = os.MkdirAll(filepath.Join(mountPoint, "etc"), 0755)
+			rootEntry := fmt.Sprintf("root:%s:%d:0:99999:7:::\n", hashedPass, daysSinceEpoch)
+			if err := os.WriteFile(shadowPath, []byte(rootEntry), 0600); err != nil {
+				errs = append(errs, fmt.Sprintf("failed creating /etc/shadow: %v", err))
+			}
+		}
+	}
+
+	// 2. Direct OpenSSH configuration for root login
+	sshdDropinDir := filepath.Join(mountPoint, "etc", "ssh", "sshd_config.d")
+	_ = os.MkdirAll(sshdDropinDir, 0755)
+	dropinConf := "# RedWolf Provisioning Security Policy\nPermitRootLogin yes\nPasswordAuthentication yes\n"
+	_ = os.WriteFile(filepath.Join(sshdDropinDir, "99-redwolf-root.conf"), []byte(dropinConf), 0644)
+
+	sshdMainPath := filepath.Join(mountPoint, "etc", "ssh", "sshd_config")
+	if data, err := os.ReadFile(sshdMainPath); err == nil {
+		content := string(data)
+		needsAppend := false
+		if !strings.Contains(content, "sshd_config.d") {
+			needsAppend = true
+		}
+		if needsAppend || !strings.Contains(content, "PermitRootLogin yes") {
+			content += "\n# RedWolf Bare-Metal Root Access\nPermitRootLogin yes\nPasswordAuthentication yes\n"
+			_ = os.WriteFile(sshdMainPath, []byte(content), 0644)
+		}
+	}
+
+	// 3. Direct SSH Public Keys injection
+	if len(cfg.SSHKeys) > 0 {
+		rootSSHDir := filepath.Join(mountPoint, "root", ".ssh")
+		_ = os.MkdirAll(rootSSHDir, 0700)
+		authKeysPath := filepath.Join(rootSSHDir, "authorized_keys")
+
+		var validKeys []string
+		for _, k := range cfg.SSHKeys {
+			trimmed := strings.TrimSpace(k)
+			if trimmed != "" {
+				validKeys = append(validKeys, trimmed)
+			}
+		}
+		if len(validKeys) > 0 {
+			existing, _ := os.ReadFile(authKeysPath)
+			existingContent := strings.TrimSpace(string(existing))
+			var combined strings.Builder
+			if existingContent != "" {
+				combined.WriteString(existingContent)
+				combined.WriteString("\n")
+			}
+			for _, k := range validKeys {
+				if !strings.Contains(existingContent, k) {
+					combined.WriteString(k)
+					combined.WriteString("\n")
+				}
+			}
+			_ = os.WriteFile(authKeysPath, []byte(combined.String()), 0600)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
 	return nil
 }
 
@@ -115,9 +224,15 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 		var sb strings.Builder
 		sb.WriteString(base)
 		sb.WriteString("\n\n# RedWolf Injected Authentication & Hardening\n")
+		sb.WriteString("disable_root: false\n")
+		sb.WriteString("ssh_pwauth: true\n")
 		sb.WriteString("users:\n")
 		sb.WriteString("  - name: root\n")
 		sb.WriteString("    lock_passwd: false\n")
+		if cfg.RootPassword != "" {
+			hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
+			sb.WriteString(fmt.Sprintf("    passwd: \"%s\"\n", hashedPass))
+		}
 		if len(cfg.SSHKeys) > 0 {
 			sb.WriteString("    ssh_authorized_keys:\n")
 			for _, key := range cfg.SSHKeys {
@@ -132,13 +247,20 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 			sb.WriteString("  list: |\n")
 			sb.WriteString(fmt.Sprintf("    root:%s\n", hashedPass))
 			sb.WriteString("  expire: false\n")
-			sb.WriteString("ssh_pwauth: true\n")
 		}
+		sb.WriteString("\nwrite_files:\n")
+		sb.WriteString("  - path: /etc/ssh/sshd_config.d/99-redwolf-root.conf\n")
+		sb.WriteString("    permissions: '0644'\n")
+		sb.WriteString("    content: |\n")
+		sb.WriteString("      PermitRootLogin yes\n")
+		sb.WriteString("      PasswordAuthentication yes\n")
 		return sb.String()
 	}
 
 	var sb strings.Builder
 	sb.WriteString("#cloud-config\n")
+	sb.WriteString("disable_root: false\n")
+	sb.WriteString("ssh_pwauth: true\n")
 	sb.WriteString("growpart:\n")
 	sb.WriteString("  mode: auto\n")
 	sb.WriteString("  devices: ['/']\n")
@@ -148,6 +270,10 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 	sb.WriteString("users:\n")
 	sb.WriteString("  - name: root\n")
 	sb.WriteString("    lock_passwd: false\n")
+	if cfg.RootPassword != "" {
+		hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
+		sb.WriteString(fmt.Sprintf("    passwd: \"%s\"\n", hashedPass))
+	}
 	if len(cfg.SSHKeys) > 0 {
 		sb.WriteString("    ssh_authorized_keys:\n")
 		for _, key := range cfg.SSHKeys {
@@ -163,7 +289,6 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 		sb.WriteString("  list: |\n")
 		sb.WriteString(fmt.Sprintf("    root:%s\n", hashedPass))
 		sb.WriteString("  expire: false\n")
-		sb.WriteString("ssh_pwauth: true\n")
 	}
 
 	sb.WriteString("\npackage_update: false\n")
@@ -172,6 +297,12 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 		sb.WriteString("  - mdadm\n")
 		sb.WriteString("  - lvm2\n")
 	}
+	sb.WriteString("\nwrite_files:\n")
+	sb.WriteString("  - path: /etc/ssh/sshd_config.d/99-redwolf-root.conf\n")
+	sb.WriteString("    permissions: '0644'\n")
+	sb.WriteString("    content: |\n")
+	sb.WriteString("      PermitRootLogin yes\n")
+	sb.WriteString("      PasswordAuthentication yes\n")
 	sb.WriteString("runcmd:\n")
 	sb.WriteString("  - [ echo, 'RedWolf Bare-Metal Provisioning Complete' ]\n")
 

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.2] - 2026-10-04 (Security & Provisioning Release)
+
+### Fixed
+- **Root Password Provisioning & Direct Shadow Injection:**
+  - Added `DirectInjectSecurityCredentials` to directly compute and write POSIX/glibc-compliant SHA-512 crypt hashes (`$6$...`) into `/etc/shadow` on the mounted target root filesystem, eliminating dependency on first-boot cloud-init execution.
+  - Injected OpenSSH drop-in configuration (`/etc/ssh/sshd_config.d/99-redwolf-root.conf`) with `PermitRootLogin yes` and `PasswordAuthentication yes` to overcome upstream distro policies (`prohibit-password` on Debian, `no` on AlmaLinux) that reject root password logins over SSH.
+  - Explicitly configured `disable_root: false` and `passwd: "$6$..."` in Cloud-Init `user-data` to prevent upstream cloud-init defaults from locking the root account.
+  - Added direct placement of operator SSH public keys into `/root/.ssh/authorized_keys` with strict `0600` permissions.
+- **LVM Device Node Resolution & Storage Initialization:**
+  - Added `resolveLVMDeviceNode` ensuring active block device path discovery (`/dev/<vg>/<lv>` and `/dev/mapper/<vg>-<lv>`) in Alpine minimal discovery environment.
+  - Added module autoloading for `dm_mod`, `xfs`, `ext4`, `vfat`, and `loop` in discovery `init.sh` with automatic `/dev/mapper/control` node creation.
+  - Hardened swap volume creation fallback to 1GB if proportional allocation exceeds volume group free extents.
+- **Web UI Wizard Credentials Feedback:**
+  - Added real-time character count and validation feedback for the root password in Step 4 of the Provisioning Wizard.
+  - Added root authentication status to the Deployment Manifest Summary card.
+  - Enforced client-side guards on the "Start Provisioning" action when credentials are underspecified.
+
+---
+
 ## [1.2.1] - 2026-10-04 (Patch Release)
 
 ### Fixed

@@ -67,3 +67,15 @@ func TestInjectMDADMConfig_Paths(t *testing.T) {
 	}
 }
 
+func TestResolveLVMDeviceNode(t *testing.T) {
+	node := resolveLVMDeviceNode("vg_system", "root")
+	if node != "/dev/vg_system/root" && node != "/dev/mapper/vg_system-root" {
+		t.Errorf("unexpected resolved LVM device node: %q", node)
+	}
+
+	hyphenNode := resolveLVMDeviceNode("vg-test", "lv-data")
+	if hyphenNode != "/dev/vg-test/lv-data" && hyphenNode != "/dev/mapper/vg--test-lv--data" {
+		t.Errorf("unexpected resolved hyphenated LVM device node: %q", hyphenNode)
+	}
+}
+

@@ -60,3 +60,38 @@ func TestGenerateLVMFstab(t *testing.T) {
 		t.Errorf("expected /boot/efi entry in fstab, got:\n%s", str)
 	}
 }
+
+func TestGenerateLVMFstab_Ext4(t *testing.T) {
+	tempDir := t.TempDir()
+	layout := &StorageLayoutResult{
+		TargetDrive:    "/dev/vg_system/root",
+		RootFSType:     "ext4",
+		BootPartition:  "/dev/nvme0n1p2",
+		BootFSType:     "ext4",
+		ESPPartition:   "/dev/nvme0n1p1",
+		SwapDevice:     "/dev/vg_system/swap",
+		LVMVolumes: []domain.LVMVolumeConfig{
+			{Name: "root", MountPoint: "/", SizeGB: 10, FSType: "ext4"},
+		},
+	}
+
+	ctx := context.Background()
+	err := generateLVMFstab(ctx, tempDir, layout, nil)
+	if err != nil {
+		t.Fatalf("unexpected error generating LVM fstab: %v", err)
+	}
+
+	fstabContent, err := os.ReadFile(filepath.Join(tempDir, "etc", "fstab"))
+	if err != nil {
+		t.Fatalf("failed reading generated fstab: %v", err)
+	}
+
+	str := string(fstabContent)
+	if !strings.Contains(str, "/dev/mapper/vg_system-root / ext4 defaults") {
+		t.Errorf("expected root LV entry with ext4 in fstab, got:\n%s", str)
+	}
+	if !strings.Contains(str, "/boot ext4 defaults") {
+		t.Errorf("expected boot entry with ext4 in fstab, got:\n%s", str)
+	}
+}
+

@@ -33,6 +33,18 @@ func TestGenerateUserData(t *testing.T) {
 	if !strings.Contains(userData, "ssh-rsa AAAAB3NzaC1yc2E") {
 		t.Fatalf("expected SSH public key in user-data")
 	}
+	if !strings.Contains(userData, "disable_root: false") {
+		t.Fatalf("expected disable_root: false in user-data")
+	}
+	if !strings.Contains(userData, "ssh_pwauth: true") {
+		t.Fatalf("expected ssh_pwauth: true in user-data")
+	}
+	if !strings.Contains(userData, "PermitRootLogin yes") {
+		t.Fatalf("expected PermitRootLogin yes in write_files")
+	}
+	if !strings.Contains(userData, `passwd: "$6$`) {
+		t.Fatalf("expected passwd hash under root user in user-data")
+	}
 	if !strings.Contains(userData, "root:$6$") {
 		t.Fatalf("expected SHA-512 crypt root password in chpasswd list, got: %s", userData)
 	}
@@ -271,6 +283,75 @@ func TestWriteNoCloudSeeds(t *testing.T) {
 	}
 	if !strings.Contains(string(net), "52:54:00:11:22:33") {
 		t.Errorf("expected macaddress in network-config, got %s", string(net))
+	}
+}
+
+func TestDirectInjectSecurityCredentials(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create fake existing /etc/shadow with locked root
+	etcDir := filepath.Join(tempDir, "etc")
+	if err := os.MkdirAll(etcDir, 0755); err != nil {
+		t.Fatalf("failed creating test etc dir: %v", err)
+	}
+	initialShadow := "root:*:19800:0:99999:7:::\nbin:*:19800:0:99999:7:::\n"
+	if err := os.WriteFile(filepath.Join(etcDir, "shadow"), []byte(initialShadow), 0600); err != nil {
+		t.Fatalf("failed writing initial shadow: %v", err)
+	}
+
+	cfg := domain.DeploymentConfig{
+		NodeID:       "node-sec-test",
+		RootPassword: "SuperSecurePass2026!",
+		SSHKeys: []string{
+			"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG... admin@redwolf",
+		},
+	}
+
+	if err := DirectInjectSecurityCredentials(tempDir, cfg); err != nil {
+		t.Fatalf("unexpected error injecting security credentials: %v", err)
+	}
+
+	// 1. Verify shadow was updated with valid SHA-512 hash
+	updatedShadow, err := os.ReadFile(filepath.Join(etcDir, "shadow"))
+	if err != nil {
+		t.Fatalf("failed reading updated shadow: %v", err)
+	}
+	lines := strings.Split(string(updatedShadow), "\n")
+	rootFound := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "root:") {
+			rootFound = true
+			parts := strings.Split(l, ":")
+			if !strings.HasPrefix(parts[1], "$6$") {
+				t.Fatalf("expected $6$ password hash in /etc/shadow for root, got: %s", parts[1])
+			}
+		}
+	}
+	if !rootFound {
+		t.Fatalf("root entry missing from updated /etc/shadow")
+	}
+
+	// 2. Verify OpenSSH drop-in config was created
+	dropinPath := filepath.Join(etcDir, "ssh", "sshd_config.d", "99-redwolf-root.conf")
+	dropinData, err := os.ReadFile(dropinPath)
+	if err != nil {
+		t.Fatalf("failed reading sshd drop-in config: %v", err)
+	}
+	if !strings.Contains(string(dropinData), "PermitRootLogin yes") {
+		t.Errorf("expected PermitRootLogin yes in sshd dropin")
+	}
+	if !strings.Contains(string(dropinData), "PasswordAuthentication yes") {
+		t.Errorf("expected PasswordAuthentication yes in sshd dropin")
+	}
+
+	// 3. Verify authorized_keys was written
+	authKeysPath := filepath.Join(tempDir, "root", ".ssh", "authorized_keys")
+	keysData, err := os.ReadFile(authKeysPath)
+	if err != nil {
+		t.Fatalf("failed reading root authorized_keys: %v", err)
+	}
+	if !strings.Contains(string(keysData), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5") {
+		t.Errorf("expected SSH public key in authorized_keys")
 	}
 }
 

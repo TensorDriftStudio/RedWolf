@@ -274,6 +274,10 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
       setDeployError(`The selected operating system (${selectedOS}) is not cached on the appliance. Please download it in Settings before provisioning.`);
       return;
     }
+    if (rootPassword.length < 8 && !sshKey.trim()) {
+      setDeployError('Root password must be at least 8 characters long or a valid SSH public key must be provided.');
+      return;
+    }
     setIsDeploying(true);
     setDeployError(null);
 
@@ -904,6 +908,19 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                     {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                   </button>
                 </div>
+                {rootPassword.length > 0 && rootPassword.length < 8 ? (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Password must be at least 8 characters long ({rootPassword.length}/8).
+                  </p>
+                ) : rootPassword.length >= 8 ? (
+                  <p className="mt-1 text-[10px] text-emerald-400">
+                    Root password is valid ({rootPassword.length} characters). Console (TTY) &amp; OpenSSH password login will be provisioned.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Enter a root password (minimum 8 characters) or supply an SSH public key below.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -946,6 +963,13 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                   <span>Network Configuration:</span>
                   <span className="font-mono text-slate-200">
                     {networkMode === 'static' ? `Static IP (${staticIp})` : 'DHCP Automatic'}
+                  </span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Root Authentication:</span>
+                  <span className={`font-mono ${rootPassword.length >= 8 ? 'text-emerald-400 font-medium' : 'text-amber-400'}`}>
+                    {rootPassword.length >= 8 ? `Password Configured (${rootPassword.length} chars)` : 'No Password'}
+                    {sshKey.trim() ? ' + SSH Key' : ''}
                   </span>
                 </div>
               </div>
@@ -1038,7 +1062,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
             ) : (
               <button
                 onClick={handleStartDeployment}
-                className="flex items-center gap-1.5 rounded-sm bg-redwolf-primary px-4 py-1 text-xs font-semibold text-white hover:bg-redwolf-hover transition-colors shadow-sm"
+                disabled={rootPassword.length < 8 && !sshKey.trim()}
+                className="flex items-center gap-1.5 rounded-sm bg-redwolf-primary px-4 py-1 text-xs font-semibold text-white hover:bg-redwolf-hover transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Play className="h-3 w-3 fill-current" />
                 Start Provisioning

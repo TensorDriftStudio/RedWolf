@@ -24,7 +24,9 @@ type StorageLayoutResult struct {
 	RAIDDevice     string
 	LVMVolumeGroup string
 	RootPartition  string
+	RootFSType     string
 	BootPartition  string
+	BootFSType     string
 	ESPPartition   string
 	LVMVolumes     []domain.LVMVolumeConfig
 	SwapDevice     string
@@ -187,6 +189,11 @@ func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.Deploym
 		"preset", cfg.PartitioningPreset,
 	)
 
+	// Pre-load device mapper and filesystem kernel modules into the running kernel
+	for _, mod := range []string{"dm_mod", "xfs", "ext4"} {
+		_ = exec.CommandContext(ctx, "modprobe", mod).Run()
+	}
+
 	// Step 1: Deactivate and remove old volume groups/PVs if present
 	_ = exec.CommandContext(ctx, "vgchange", "-an", "vg_system").Run()
 	_ = exec.CommandContext(ctx, "vgremove", "-y", "-f", "vg_system").Run()
@@ -213,11 +220,23 @@ func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.Deploym
 
 	_ = exec.CommandContext(ctx, "partprobe", realDisk).Run()
 	_ = exec.CommandContext(ctx, "blockdev", "--rereadpt", realDisk).Run()
+	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
 	time.Sleep(1 * time.Second)
 
 	espPart := resolvePartitionPath(realDisk, 1)
 	bootPart := resolvePartitionPath(realDisk, 2)
 	lvmPart := resolvePartitionPath(realDisk, 3)
+
+	// Ensure LVM physical partition device node is visible in /dev before pvcreate
+	for wait := 0; wait < 10; wait++ {
+		if _, err := os.Stat(lvmPart); err == nil {
+			break
+		}
+		_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+		_ = exec.CommandContext(ctx, "partprobe", realDisk).Run()
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// Step 3: Initialize Physical Volume and Volume Group
 	pvCmd := exec.CommandContext(ctx, "pvcreate", "-ff", "-y", lvmPart)
@@ -228,15 +247,27 @@ func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.Deploym
 	vgCmd := exec.CommandContext(ctx, "vgcreate", "-y", "vg_system", lvmPart)
 	if out, err := vgCmd.CombinedOutput(); err != nil {
 		slog.WarnContext(ctx, "vgcreate returned error; retrying with forced options", "error", err, "output", string(out))
-		_ = exec.CommandContext(ctx, "vgcreate", "-y", "-ff", "vg_system", lvmPart).Run()
+		if out2, err2 := exec.CommandContext(ctx, "vgcreate", "-y", "-ff", "vg_system", lvmPart).CombinedOutput(); err2 != nil {
+			return nil, fmt.Errorf("failed creating LVM volume group vg_system on %s: %w (output: %s)", lvmPart, err2, string(out2))
+		}
 	}
 
 	// Step 4: Format ESP and Boot partitions
 	_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
+	bootFsType := "xfs"
 	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
-		_ = exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).Run()
+		bootFsType = "ext4"
+		if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("failed formatting boot partition %s with ext4: %w (output: %s)", bootPart, err, string(out))
+		}
 	} else {
-		_ = exec.CommandContext(ctx, "mkfs.xfs", "-f", bootPart).Run()
+		if out, err := exec.CommandContext(ctx, "mkfs.xfs", "-f", bootPart).CombinedOutput(); err != nil {
+			slog.WarnContext(ctx, "xfs formatting warning on boot partition; falling back to ext4", "partition", bootPart, "output", string(out))
+			if fbOut, fbErr := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).CombinedOutput(); fbErr != nil {
+				return nil, fmt.Errorf("failed formatting boot partition %s: %w (output: %s; ext4 fallback: %s)", bootPart, fbErr, string(out), string(fbOut))
+			}
+			bootFsType = "ext4"
+		}
 	}
 
 	// Step 5: Determine and scale Logical Volumes
@@ -280,11 +311,9 @@ func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.Deploym
 			scaledSwap = 1
 		}
 		lvSwapCmd := exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", scaledSwap), "-n", "swap", "vg_system")
-		if out, err := lvSwapCmd.CombinedOutput(); err == nil {
-			swapDev = "/dev/vg_system/swap"
-			_ = exec.CommandContext(ctx, "mkswap", "-f", swapDev).Run()
-		} else {
-			slog.WarnContext(ctx, "swap lvcreate error", "error", err, "output", string(out))
+		if out, err := lvSwapCmd.CombinedOutput(); err != nil {
+			slog.WarnContext(ctx, "swap lvcreate error; falling back to 1G", "error", err, "output", string(out))
+			_ = exec.CommandContext(ctx, "lvcreate", "-y", "-L", "1G", "-n", "swap", "vg_system").Run()
 		}
 	}
 
@@ -306,33 +335,125 @@ func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.Deploym
 
 		if out, err := lvCreate.CombinedOutput(); err != nil {
 			// If percentage or sizing failed, fallback to 2G fixed
-			_ = exec.CommandContext(ctx, "lvcreate", "-y", "-L", "2G", "-n", vol.Name, "vg_system").Run()
-			slog.WarnContext(ctx, "lvcreate warning", "volume", vol.Name, "output", string(out))
-		}
-
-		lvDev := fmt.Sprintf("/dev/vg_system/%s", vol.Name)
-		if vol.FSType == "ext4" {
-			_ = exec.CommandContext(ctx, "mkfs.ext4", "-F", lvDev).Run()
-		} else {
-			_ = exec.CommandContext(ctx, "mkfs.xfs", "-f", lvDev).Run()
+			outFb, errFb := exec.CommandContext(ctx, "lvcreate", "-y", "-L", "2G", "-n", vol.Name, "vg_system").CombinedOutput()
+			if errFb != nil {
+				slog.ErrorContext(ctx, "failed creating logical volume", "volume", vol.Name, "primary_err", string(out), "fallback_err", string(outFb))
+				return nil, fmt.Errorf("failed creating logical volume %s: %w (output: %s)", vol.Name, errFb, string(outFb))
+			}
 		}
 	}
 
+	// Activate volume group and instantiate device nodes
 	_ = exec.CommandContext(ctx, "vgchange", "-ay", "vg_system").Run()
+	_ = exec.CommandContext(ctx, "vgmknodes").Run()
+	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
+	time.Sleep(1 * time.Second)
+
+	// Format swap volume
+	if swapGB > 0 {
+		swapDevNode := resolveLVMDeviceNode("vg_system", "swap")
+		if out, err := exec.CommandContext(ctx, "mkswap", "-f", swapDevNode).CombinedOutput(); err != nil {
+			slog.WarnContext(ctx, "mkswap warning", "device", swapDevNode, "error", err, "output", string(out))
+		}
+		swapDev = swapDevNode
+	}
+
+	// Format data/root logical volumes
+	var rootDevNode string
+	var rootFSType string
+
+	for i, vol := range vols {
+		devNode := resolveLVMDeviceNode("vg_system", vol.Name)
+		fsType := strings.ToLower(strings.TrimSpace(vol.FSType))
+		if fsType == "" {
+			if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
+				fsType = "ext4"
+			} else {
+				fsType = "xfs"
+			}
+		}
+
+		slog.InfoContext(ctx, "formatting logical volume",
+			"volume", vol.Name,
+			"device", devNode,
+			"fstype", fsType,
+		)
+
+		var mkfsCmd *exec.Cmd
+		if fsType == "ext4" {
+			mkfsCmd = exec.CommandContext(ctx, "mkfs.ext4", "-F", devNode)
+		} else {
+			mkfsCmd = exec.CommandContext(ctx, "mkfs.xfs", "-f", devNode)
+		}
+
+		if out, err := mkfsCmd.CombinedOutput(); err != nil {
+			slog.WarnContext(ctx, "mkfs failed on logical volume; attempting ext4 fallback",
+				"volume", vol.Name,
+				"fstype", fsType,
+				"error", err,
+				"output", string(out),
+			)
+			if fbOut, fbErr := exec.CommandContext(ctx, "mkfs.ext4", "-F", devNode).CombinedOutput(); fbErr != nil {
+				return nil, fmt.Errorf("failed formatting logical volume %s (%s) with %s: %w (output: %s; ext4 fallback: %s)",
+					vol.Name, devNode, fsType, err, string(out), string(fbOut))
+			}
+			vols[i].FSType = "ext4"
+			fsType = "ext4"
+		}
+
+		if vol.MountPoint == "/" || vol.Name == "root" {
+			rootDevNode = devNode
+			rootFSType = fsType
+		}
+	}
+
+	if rootDevNode == "" {
+		rootDevNode = resolveLVMDeviceNode("vg_system", "root")
+		if rootFSType == "" {
+			rootFSType = "xfs"
+		}
+	}
 
 	return &StorageLayoutResult{
-		TargetDrive:    "/dev/vg_system/root",
+		TargetDrive:    rootDevNode,
 		ESPDrives:      []string{espPart},
 		IsSoftwareRAID: false,
 		IsLVM:          true,
 		LVMVolumeGroup: "vg_system",
-		RootPartition:  "/dev/vg_system/root",
+		RootPartition:  rootDevNode,
+		RootFSType:     rootFSType,
 		BootPartition:  bootPart,
+		BootFSType:     bootFsType,
 		ESPPartition:   espPart,
 		LVMVolumes:     vols,
 		SwapDevice:     swapDev,
 		TargetDisk:     realDisk,
 	}, nil
+}
+
+// resolveLVMDeviceNode returns the active block device path for an LVM volume,
+// checking standard symlink (/dev/<vg>/<lv>) and canonical device-mapper node (/dev/mapper/<vg>-<lv>).
+// It also ensures the /dev/<vg>/<lv> symlink exists even in minimal udev-less environments.
+func resolveLVMDeviceNode(vgName, lvName string) string {
+	mapperPath := fmt.Sprintf("/dev/mapper/%s-%s",
+		strings.ReplaceAll(vgName, "-", "--"),
+		strings.ReplaceAll(lvName, "-", "--"),
+	)
+	symlinkDir := fmt.Sprintf("/dev/%s", vgName)
+	symlinkPath := fmt.Sprintf("%s/%s", symlinkDir, lvName)
+
+	if _, err := os.Stat(symlinkPath); err == nil {
+		return symlinkPath
+	}
+	if _, err := os.Stat(mapperPath); err == nil {
+		_ = os.MkdirAll(symlinkDir, 0755)
+		_ = os.Symlink(mapperPath, symlinkPath)
+		return mapperPath
+	}
+
+	// Fallback to mapperPath as canonical
+	return mapperPath
 }
 
 // resolvePartitionPath returns the partition device node for a disk and partition number.

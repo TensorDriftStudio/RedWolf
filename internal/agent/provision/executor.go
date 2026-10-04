@@ -182,12 +182,35 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 	// 1. Mount root Logical Volume
 	rootLV := layout.RootPartition
 	if rootLV == "" {
-		rootLV = "/dev/vg_system/root"
+		rootLV = resolveLVMDeviceNode("vg_system", "root")
+	} else if _, err := os.Stat(rootLV); err != nil {
+		rootLV = resolveLVMDeviceNode("vg_system", "root")
 	}
 
-	_ = reporter.Report(ctx, nodeID, 15, "Mounting LVM target hierarchy...", fmt.Sprintf("Mounting root volume %s to %s", rootLV, targetRootMount))
-	if out, err := exec.CommandContext(ctx, "mount", rootLV, targetRootMount).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed mounting root LV %s: %w (output: %s)", rootLV, err, string(out))
+	// Pre-load essential filesystem kernel drivers into running kernel
+	for _, mod := range []string{"dm_mod", "xfs", "ext4"} {
+		_ = exec.CommandContext(ctx, "modprobe", mod).Run()
+	}
+
+	rootFSType := layout.RootFSType
+	if rootFSType == "" {
+		for _, v := range layout.LVMVolumes {
+			if v.MountPoint == "/" || v.Name == "root" {
+				rootFSType = v.FSType
+				break
+			}
+		}
+	}
+	if rootFSType == "" {
+		rootFSType = "xfs"
+	}
+
+	_ = reporter.Report(ctx, nodeID, 15, "Mounting LVM target hierarchy...", fmt.Sprintf("Mounting root volume %s (%s) to %s", rootLV, rootFSType, targetRootMount))
+	if out, err := exec.CommandContext(ctx, "mount", "-t", rootFSType, rootLV, targetRootMount).CombinedOutput(); err != nil {
+		// Attempt fallback mount without explicit type
+		if fallbackOut, fallbackErr := exec.CommandContext(ctx, "mount", rootLV, targetRootMount).CombinedOutput(); fallbackErr != nil {
+			return fmt.Errorf("failed mounting root LV %s: %w (output: %s; with -t %s: %s)", rootLV, fallbackErr, string(fallbackOut), rootFSType, string(out))
+		}
 	}
 
 	defer func() {
@@ -199,14 +222,26 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 	// 2. Mount /boot and /boot/efi
 	bootMount := filepath.Join(targetRootMount, "boot")
 	_ = os.MkdirAll(bootMount, 0755)
-	if out, err := exec.CommandContext(ctx, "mount", layout.BootPartition, bootMount).CombinedOutput(); err != nil {
-		slog.WarnContext(ctx, "failed mounting boot partition", "partition", layout.BootPartition, "output", string(out))
+	bootFSType := layout.BootFSType
+	if bootFSType == "" {
+		if strings.Contains(strings.ToLower(string(task.OS)), "debian") {
+			bootFSType = "ext4"
+		} else {
+			bootFSType = "xfs"
+		}
+	}
+	if out, err := exec.CommandContext(ctx, "mount", "-t", bootFSType, layout.BootPartition, bootMount).CombinedOutput(); err != nil {
+		if out2, err2 := exec.CommandContext(ctx, "mount", layout.BootPartition, bootMount).CombinedOutput(); err2 != nil {
+			slog.WarnContext(ctx, "failed mounting boot partition", "partition", layout.BootPartition, "output", string(out), "fallback_output", string(out2))
+		}
 	}
 
 	efiMount := filepath.Join(bootMount, "efi")
 	_ = os.MkdirAll(efiMount, 0755)
-	if out, err := exec.CommandContext(ctx, "mount", layout.ESPPartition, efiMount).CombinedOutput(); err != nil {
-		slog.WarnContext(ctx, "failed mounting efi partition", "partition", layout.ESPPartition, "output", string(out))
+	if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", layout.ESPPartition, efiMount).CombinedOutput(); err != nil {
+		if out2, err2 := exec.CommandContext(ctx, "mount", layout.ESPPartition, efiMount).CombinedOutput(); err2 != nil {
+			slog.WarnContext(ctx, "failed mounting efi partition", "partition", layout.ESPPartition, "output", string(out), "fallback_output", string(out2))
+		}
 	}
 
 	// 3. Mount additional Logical Volumes (e.g. /var, /home)
@@ -218,14 +253,20 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 		}
 		targetPath := filepath.Join(targetRootMount, mp)
 		_ = os.MkdirAll(targetPath, 0755)
-		lvDev := fmt.Sprintf("/dev/vg_system/%s", vol.Name)
-		if out, err := exec.CommandContext(ctx, "mount", lvDev, targetPath).CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "failed mounting sub volume", "lv", lvDev, "mount", targetPath, "output", string(out))
+		lvDev := resolveLVMDeviceNode("vg_system", vol.Name)
+		fsType := vol.FSType
+		if fsType == "" {
+			fsType = "xfs"
+		}
+		if out, err := exec.CommandContext(ctx, "mount", "-t", fsType, lvDev, targetPath).CombinedOutput(); err != nil {
+			if out2, err2 := exec.CommandContext(ctx, "mount", lvDev, targetPath).CombinedOutput(); err2 != nil {
+				slog.WarnContext(ctx, "failed mounting sub volume", "lv", lvDev, "mount", targetPath, "output", string(out), "fallback_output", string(out2))
+			}
 		}
 		subMounts = append(subMounts, lvmMountEntry{
 			device:     lvDev,
 			mountPoint: mp,
-			fsType:     vol.FSType,
+			fsType:     fsType,
 		})
 	}
 
@@ -268,10 +309,13 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 		slog.WarnContext(ctx, "warning generating fstab for LVM", "error", err)
 	}
 
-	// 8. Inject Cloud-Init NoCloud seed
+	// 8. Inject Cloud-Init NoCloud seed & direct credentials
 	_ = reporter.Report(ctx, nodeID, 85, "Injecting Cloud-Init NoCloud seed...", "Writing user-data, meta-data, and network-config")
 	if err := WriteNoCloudSeeds(targetRootMount, task.Config, bootMAC); err != nil {
 		return fmt.Errorf("failed injecting cloud-init into LVM rootfs: %w", err)
+	}
+	if err := DirectInjectSecurityCredentials(targetRootMount, task.Config); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning injecting security credentials into LVM rootfs", "error", err)
 	}
 
 	// 9. Unmount all target partitions
@@ -358,10 +402,20 @@ func generateLVMFstab(ctx context.Context, targetRootMount string, layout *Stora
 	bootUUID := getPartitionUUID(ctx, layout.BootPartition)
 	espUUID := getPartitionUUID(ctx, layout.ESPPartition)
 
+	rootFs := layout.RootFSType
+	if rootFs == "" {
+		rootFs = "xfs"
+	}
+
+	bootFs := layout.BootFSType
+	if bootFs == "" {
+		bootFs = "xfs"
+	}
+
 	var sb strings.Builder
 	sb.WriteString("# /etc/fstab: auto-generated by RedWolf Bare-Metal Provisioning Engine\n")
 	sb.WriteString("# <file system> <mount point> <type> <options> <dump> <pass>\n")
-	sb.WriteString("/dev/mapper/vg_system-root / xfs defaults 0 0\n")
+	sb.WriteString(fmt.Sprintf("/dev/mapper/vg_system-root / %s defaults 0 0\n", rootFs))
 
 	for _, sm := range subMounts {
 		fs := sm.fsType
@@ -377,9 +431,9 @@ func generateLVMFstab(ctx context.Context, targetRootMount string, layout *Stora
 	}
 
 	if bootUUID != "" {
-		sb.WriteString(fmt.Sprintf("UUID=%s /boot xfs defaults 0 0\n", bootUUID))
+		sb.WriteString(fmt.Sprintf("UUID=%s /boot %s defaults 0 0\n", bootUUID, bootFs))
 	} else if layout.BootPartition != "" {
-		sb.WriteString(fmt.Sprintf("%s /boot xfs defaults 0 0\n", layout.BootPartition))
+		sb.WriteString(fmt.Sprintf("%s /boot %s defaults 0 0\n", layout.BootPartition, bootFs))
 	}
 
 	if espUUID != "" {
