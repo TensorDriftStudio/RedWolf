@@ -120,9 +120,40 @@ fetch_image() {
 # Upstream mirrors: repo.almalinux.org, cloud.debian.org
 case "$SELECTED_OS" in
     almalinux9)
-        fetch_image "AlmaLinux 9" \
-            "almalinux-9-genericcloud.raw.zstd" \
-            "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst"
+        if curl -s -I --fail "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst" > /dev/null 2>&1; then
+            fetch_image "AlmaLinux 9" \
+                "almalinux-9-genericcloud.raw.zstd" \
+                "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst"
+        else
+            echo -e "\n${BOLD}${BLUE}>>> Distribution: AlmaLinux 9 (Converting official upstream .qcow2 to .raw.zstd)${NC}"
+            dest_zstd="${TARGET_DIR}/almalinux-9-genericcloud.raw.zstd"
+            if [ -f "${dest_zstd}" ]; then
+                echo -e "${GREEN}    ✓ Image already cached in local repository ($(du -h "${dest_zstd}" | cut -f1))${NC}"
+            else
+                qcow_file="${TARGET_DIR}/almalinux-9-genericcloud.qcow2"
+                raw_file="${TARGET_DIR}/almalinux-9-genericcloud.raw"
+                echo -e "    Downloading upstream QCOW2 image..."
+                curl -L --fail --progress-bar -o "${qcow_file}" \
+                    "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+                echo -e "    Converting QCOW2 to raw sparse disk image..."
+                if command -v qemu-img &>/dev/null; then
+                    qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
+                else
+                    echo -e "${YELLOW}    qemu-img not found; installing via dnf/apt...${NC}"
+                    (command -v dnf &>/dev/null && sudo dnf install -y qemu-img) || \
+                    (command -v apt-get &>/dev/null && sudo apt-get update && sudo apt-get install -y qemu-utils)
+                    qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
+                fi
+                echo -e "    Compressing raw image with zstd..."
+                if ! command -v zstd &>/dev/null; then
+                    (command -v dnf &>/dev/null && sudo dnf install -y zstd) || \
+                    (command -v apt-get &>/dev/null && sudo apt-get install -y zstd)
+                fi
+                zstd --rm -3 "${raw_file}" -o "${dest_zstd}"
+                rm -f "${qcow_file}"
+                echo -e "${GREEN}    ✓ AlmaLinux 9 ready: ${dest_zstd} ($(du -h "${dest_zstd}" | cut -f1))${NC}"
+            fi
+        fi
         ;;
     almalinux8)
         fetch_image "AlmaLinux 8" \
