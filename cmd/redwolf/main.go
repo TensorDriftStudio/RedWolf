@@ -124,6 +124,10 @@ func main() {
 		provIface = initSettings.General.ProvisioningInterface
 		slog.Info("using provisioning interface from persisted settings", "interface", provIface)
 	}
+	if initSettings != nil && initSettings.Storage.ImageStorageDir != "" {
+		imageCatalog.SetImageDir(initSettings.Storage.ImageStorageDir)
+		slog.Info("using image storage directory from persisted settings", "dir", initSettings.Storage.ImageStorageDir)
+	}
 	var netCfg domain.NetworkSettings
 	if initSettings != nil {
 		netCfg = initSettings.Network

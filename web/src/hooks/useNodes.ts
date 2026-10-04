@@ -1,15 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { ServerNode, DeploymentConfig } from '../types';
-import { getAuthHeaders } from '../utils/auth';
+import { getAuthHeaders, notifyUnauthorized } from '../utils/auth';
 
-export function useNodes() {
+export function useNodes(isAuthenticated: boolean = true) {
   const [nodes, setNodes] = useState<ServerNode[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
   // Fetch all nodes from RedWolf Core REST API
   const fetchNodes = useCallback(async () => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     try {
@@ -24,6 +28,10 @@ export function useNodes() {
           setNodes([]);
         }
       } else {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          return;
+        }
         const errData = await res.json().catch(() => ({}));
         setError(errData.error || `Failed fetching fleet inventory (${res.status})`);
       }
@@ -33,7 +41,7 @@ export function useNodes() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [isAuthenticated]);
 
   // Deploy bare-metal OS on a node
   const deployNode = useCallback(async (config: DeploymentConfig) => {
@@ -48,6 +56,10 @@ export function useNodes() {
       });
 
       if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          throw new Error('Session expired. Please log in again.');
+        }
         const errData = await res.json().catch(() => ({ error: 'Deployment request rejected' }));
         throw new Error(errData.error || 'Deployment failed');
       }
@@ -87,6 +99,10 @@ export function useNodes() {
         headers: { ...getAuthHeaders() },
       });
       if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          throw new Error('Session expired. Please log in again.');
+        }
         const errData = await res.json().catch(() => ({ error: 'Failed resetting node' }));
         throw new Error(errData.error || 'Reset failed');
       }
@@ -107,6 +123,10 @@ export function useNodes() {
         headers: { ...getAuthHeaders() },
       });
       if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          throw new Error('Session expired. Please log in again.');
+        }
         const errData = await res.json().catch(() => ({ error: 'Failed deleting node' }));
         throw new Error(errData.error || 'Delete failed');
       }
@@ -120,6 +140,14 @@ export function useNodes() {
 
   // Real-time WebSocket connection to RedWolf Core event bus
   useEffect(() => {
+    if (!isAuthenticated) {
+      setNodes([]);
+      setError(null);
+      setIsLoading(false);
+      setIsConnected(false);
+      return;
+    }
+
     fetchNodes();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -181,7 +209,7 @@ export function useNodes() {
         ws.close();
       }
     };
-  }, [fetchNodes]);
+  }, [isAuthenticated, fetchNodes]);
 
   return {
     nodes,
@@ -195,3 +223,4 @@ export function useNodes() {
     deleteNode,
   };
 }
+

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.1] - 2026-10-04 (Patch Release)
+
+### Fixed
+- **Multi-Tab Authentication & Fleet Telemetry Ingestion:**
+  - Resolved `authorization bearer token or session cookie required` error on fresh tab login by linking `useNodes` lifecycle to `isAuthenticated`.
+  - Inhibited unauthenticated background requests to `/api/nodes`, `/api/settings`, and `/api/templates` prior to sign-in.
+  - Added cross-tab authentication synchronization via `storage` events and automatic redirection on session expiration.
+  - Persisted tokens before state transitions to eliminate race conditions during authorization checks.
+- **Debian Cloud Image Streaming & Compression:**
+  - Added dynamic zstd compression for raw Debian generic cloud images with user-agent mirror compliance.
+  - Prevented race conditions with locked image directory resolution.
+
+### Added
+- **Docker Hub Documentation:**
+  - Added comprehensive `DOCKERHUB.md` enterprise overview with architecture diagrams and container configuration guides.
+
+---
+
 ## [1.2.0] - 2026-10-04 (Storage & Platform Release)
 
 ### Added

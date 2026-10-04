@@ -21,15 +21,17 @@ type HostInterfaceInfo struct {
 
 // SettingsHandler manages HTTP endpoints for system settings and directory diagnostics.
 type SettingsHandler struct {
-	settingsSvc *service.SettingsService
-	dnsmasq     port.DNSMasqManager
+	settingsSvc  *service.SettingsService
+	dnsmasq      port.DNSMasqManager
+	imageCatalog *service.ImageCatalogService
 }
 
 // NewSettingsHandler creates an initialized SettingsHandler.
-func NewSettingsHandler(settingsSvc *service.SettingsService, dnsmasq port.DNSMasqManager) *SettingsHandler {
+func NewSettingsHandler(settingsSvc *service.SettingsService, dnsmasq port.DNSMasqManager, imageCatalog *service.ImageCatalogService) *SettingsHandler {
 	return &SettingsHandler{
-		settingsSvc: settingsSvc,
-		dnsmasq:     dnsmasq,
+		settingsSvc:  settingsSvc,
+		dnsmasq:      dnsmasq,
+		imageCatalog: imageCatalog,
 	}
 }
 
@@ -77,6 +79,10 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	if h.dnsmasq != nil {
 		_ = h.dnsmasq.UpdateNetworkSettings(r.Context(), newSettings.Network, newSettings.General.ProvisioningInterface)
+	}
+
+	if h.imageCatalog != nil && newSettings.Storage.ImageStorageDir != "" {
+		h.imageCatalog.SetImageDir(newSettings.Storage.ImageStorageDir)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})

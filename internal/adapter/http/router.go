@@ -112,7 +112,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	// Settings & Directory Testing REST API (Requires Admin role)
 	if cfg.SettingsSvc != nil {
-		settingsHandler := NewSettingsHandler(cfg.SettingsSvc, cfg.DNSMasq)
+		settingsHandler := NewSettingsHandler(cfg.SettingsSvc, cfg.DNSMasq, cfg.ImageCatalog)
 		r.Route("/api/settings", func(r chi.Router) {
 			if cfg.AuthSvc != nil {
 				r.Use(Authenticator(cfg.AuthSvc))

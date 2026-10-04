@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { User, AuthSource } from '../types';
+import { AUTH_UNAUTHORIZED_EVENT } from '../utils/auth';
 
 const STORAGE_KEY_USER = 'redwolf_user';
 const STORAGE_KEY_TOKEN = 'redwolf_token';
@@ -7,8 +8,9 @@ const STORAGE_KEY_TOKEN = 'redwolf_token';
 export function useAuth() {
   const [user, setUser] = useState<User | null>(() => {
     try {
+      const token = localStorage.getItem(STORAGE_KEY_TOKEN);
       const stored = localStorage.getItem(STORAGE_KEY_USER);
-      if (stored) {
+      if (token && stored) {
         return JSON.parse(stored);
       }
     } catch {
@@ -51,6 +53,39 @@ export function useAuth() {
       });
   }, []);
 
+  // Synchronize authentication state across browser tabs and handle unauthorized invalidations
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      localStorage.removeItem(STORAGE_KEY_TOKEN);
+      localStorage.removeItem(STORAGE_KEY_USER);
+      setUser(null);
+    };
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_TOKEN || e.key === STORAGE_KEY_USER) {
+        const token = localStorage.getItem(STORAGE_KEY_TOKEN);
+        const storedUser = localStorage.getItem(STORAGE_KEY_USER);
+        if (token && storedUser) {
+          try {
+            setUser(JSON.parse(storedUser));
+          } catch {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
+      }
+    };
+
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
   const login = useCallback(async (username: string, password: string, source: AuthSource = 'LOCAL') => {
     setIsLoading(true);
     setError(null);
@@ -63,9 +98,9 @@ export function useAuth() {
 
       if (res.ok) {
         const data = await res.json();
-        setUser(data.user);
         localStorage.setItem(STORAGE_KEY_TOKEN, data.token);
         localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(data.user));
+        setUser(data.user);
         return data.user;
       }
 
@@ -102,3 +137,4 @@ export function useAuth() {
     logout,
   };
 }
+

@@ -71,7 +71,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {!isCollapsed && (
               <div className="flex items-baseline gap-1.5 overflow-hidden">
                 <span className="font-bold tracking-tight text-white text-sm">REDWOLF</span>
-                <span className="text-[10px] font-mono text-slate-500">1.2.0</span>
+                <span className="text-[10px] font-mono text-slate-500">1.2.1</span>
               </div>
             )}
           </div>

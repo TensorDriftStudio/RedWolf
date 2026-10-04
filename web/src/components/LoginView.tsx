@@ -126,7 +126,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, isLoading, error 
 
         {/* Footer */}
         <div className="py-2.5 px-4 bg-[#0c0e14] border-t border-[#212836] text-center text-[10px] text-slate-500 font-mono">
-          RedWolf v1.2.0
+          RedWolf v1.2.1
         </div>
       </div>
     </div>

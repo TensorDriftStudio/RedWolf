@@ -10,12 +10,12 @@ import { LoginView } from './components/LoginView';
 import { useNodes } from './hooks/useNodes';
 import { useAuth } from './hooks/useAuth';
 import type { Vendor, NodeStatus, CloudInitTemplate } from './types';
-import { getAuthHeaders } from './utils/auth';
+import { getAuthHeaders, notifyUnauthorized } from './utils/auth';
 import { Filter, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export function App() {
   const { user, isAuthenticated, isLoading: isAuthLoading, error: authError, login, logout } = useAuth();
-  const { nodes, isLoading, error, isConnected, refresh, deployNode, resetNode, deleteNode } = useNodes();
+  const { nodes, isLoading, error, isConnected, refresh, deployNode, resetNode, deleteNode } = useNodes(isAuthenticated);
 
   const [currentView, setCurrentView] = useState<'fleet' | 'settings'>('fleet');
   const [settingsTab, setSettingsTab] = useState<'auth' | 'network' | 'storage' | 'templates'>('auth');
@@ -53,17 +53,24 @@ export function App() {
 
   // Dynamically query subnet configuration from Core settings
   const loadSettings = useCallback(() => {
+    if (!isAuthenticated) return;
     fetch('/api/settings', {
       headers: { ...getAuthHeaders() },
     })
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          return null;
+        }
+        return res.ok ? res.json() : null;
+      })
       .then((data) => {
         if (data?.network?.subnetCidr) {
           setSubnetCidr(data.network.subnetCidr);
         }
       })
       .catch(() => {});
-  }, []);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -73,10 +80,17 @@ export function App() {
 
   // Fetch template count for sidebar badge
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetch('/api/templates', {
       headers: { ...getAuthHeaders() },
     })
-      .then((res) => (res.ok ? res.json() : []))
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          notifyUnauthorized();
+          return [];
+        }
+        return res.ok ? res.json() : [];
+      })
       .then((data: CloudInitTemplate[]) => {
         if (Array.isArray(data)) {
           setTemplateCount(data.length);
@@ -84,6 +98,7 @@ export function App() {
       })
       .catch(() => {});
   }, [isAuthenticated]);
+
 
   // Synchronously resolve live node instances from current nodes state
   const inspectedNode = useMemo(() => {

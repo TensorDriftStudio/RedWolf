@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,20 @@ import (
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
 )
+
+var imageHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   20 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 5 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
 
 // DownloadStatus tracks live download progress of an OS image.
 type DownloadStatus struct {
@@ -119,12 +134,10 @@ func (s *ImageCatalogService) SetImageDir(dir string) {
 	s.imageDir = dir
 }
 
-// resolveWritableImageDir checks candidate directories and returns the first writable directory.
-func (s *ImageCatalogService) resolveWritableImageDir() string {
-	s.mu.RLock()
+// resolveWritableImageDirLocked checks candidate directories and returns the first writable directory.
+// Caller must hold s.mu (Lock or RLock).
+func (s *ImageCatalogService) resolveWritableImageDirLocked() string {
 	primary := s.imageDir
-	s.mu.RUnlock()
-
 	candidates := []string{primary, "/var/lib/redwolf/images", "data/images"}
 	for _, dir := range candidates {
 		if dir == "" {
@@ -226,7 +239,7 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 	}
 
 	slug := getOSSlug(osType)
-	targetDir := s.resolveWritableImageDir()
+	targetDir := s.resolveWritableImageDirLocked()
 	urlLower := strings.ToLower(target.downloadURL)
 	isQcow2 := strings.HasSuffix(urlLower, ".qcow2")
 
@@ -236,8 +249,8 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 		destFilename = fmt.Sprintf("%s-genericcloud.raw.zstd", slug)
 		tempFilename = fmt.Sprintf("%s-genericcloud.upstream.qcow2.part", slug)
 	} else {
-		destFilename = filepath.Base(target.downloadURL)
-		tempFilename = destFilename + ".part"
+		destFilename = fmt.Sprintf("%s-genericcloud.raw.zstd", slug)
+		tempFilename = fmt.Sprintf("%s-genericcloud.upstream.raw.part", slug)
 	}
 
 	destPath := filepath.Join(targetDir, destFilename)
@@ -272,8 +285,9 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 			s.mu.Unlock()
 			return
 		}
+		req.Header.Set("User-Agent", "RedWolf-Provisioner/1.2.0 (+https://github.com/TensorDriftStudio/RedWolf)")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := imageHTTPClient.Do(req)
 		if err != nil {
 			s.mu.Lock()
 			dlStatus.Status = "error"
@@ -323,15 +337,11 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 				}
 				copied += int64(n)
 
-				if time.Since(lastLog) > 500*time.Millisecond {
+				if time.Since(lastLog) > 300*time.Millisecond {
 					s.mu.Lock()
 					dlStatus.CopiedBytes = copied
 					if dlStatus.TotalBytes > 0 {
-						if qcowSource {
-							dlStatus.Progress = int((copied * 80) / dlStatus.TotalBytes)
-						} else {
-							dlStatus.Progress = int((copied * 100) / dlStatus.TotalBytes)
-						}
+						dlStatus.Progress = int((copied * 80) / dlStatus.TotalBytes)
 					}
 					s.mu.Unlock()
 					lastLog = time.Now()
@@ -413,15 +423,36 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 			}
 		} else {
 			// Direct raw image (Debian 12 / Debian 13)
-			actualDest := filepath.Join(destDir, filepath.Base(targetURL))
-			if err := os.Rename(downloadTempPath, actualDest); err != nil {
+			rawFilename := fmt.Sprintf("%s-genericcloud.raw", imgSlug)
+			rawPath := filepath.Join(destDir, rawFilename)
+			if err := os.Rename(downloadTempPath, rawPath); err != nil {
 				s.mu.Lock()
 				dlStatus.Status = "error"
 				dlStatus.Error = err.Error()
 				s.mu.Unlock()
 				return
 			}
-			finalFilename = filepath.Base(targetURL)
+
+			// If zstd compressor is available, compress raw sparse disk into high-speed streaming format
+			if zstdPath, err := exec.LookPath("zstd"); err == nil {
+				slog.Info("compressing downloaded Debian raw disk image with zstd", "os", targetOS, "raw", rawPath)
+				s.mu.Lock()
+				dlStatus.Status = "converting"
+				dlStatus.Progress = 90
+				s.mu.Unlock()
+
+				zstdFilename := fmt.Sprintf("%s-genericcloud.raw.zstd", imgSlug)
+				zstdPathDest := filepath.Join(destDir, zstdFilename)
+				zstdCmd := exec.CommandContext(context.Background(), zstdPath, "--rm", "-3", rawPath, "-o", zstdPathDest)
+				if out, err := zstdCmd.CombinedOutput(); err != nil {
+					slog.Warn("zstd compression failed, keeping uncompressed raw image", "error", err, "output", string(out))
+					finalFilename = rawFilename
+				} else {
+					finalFilename = zstdFilename
+				}
+			} else {
+				finalFilename = rawFilename
+			}
 		}
 
 		finalFilePath := filepath.Join(destDir, finalFilename)
