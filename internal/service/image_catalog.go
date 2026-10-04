@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,7 +23,7 @@ type DownloadStatus struct {
 	TotalBytes  int64                  `json:"totalBytes"`
 	CopiedBytes int64                  `json:"copiedBytes"`
 	Progress    int                    `json:"progress"`
-	Status      string                 `json:"status"` // "downloading", "completed", "error"
+	Status      string                 `json:"status"` // "downloading", "converting", "completed", "error"
 	Error       string                 `json:"error,omitempty"`
 }
 
@@ -48,20 +49,20 @@ var supportedTargets = []imageTarget{
 	{
 		os:          domain.OSAlmaLinux9,
 		displayName: "AlmaLinux 9 (Enterprise LTS)",
-		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst", "almalinux-9-genericcloud.raw"},
-		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst",
+		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "almalinux-9-genericcloud.raw", "almalinux-9-genericcloud.qcow2"},
+		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSDebian12,
 		displayName: "Debian 12 Bookworm (Stable LTS)",
-		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw.zst", "debian-12-genericcloud-amd64.raw", "debian-12-genericcloud.raw"},
+		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw", "debian-12-genericcloud.raw"},
 		downloadURL: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw",
 	},
 	{
 		os:          domain.OSAlmaLinux8,
 		displayName: "AlmaLinux 8 (Legacy Enterprise)",
-		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst", "almalinux-8-genericcloud.raw"},
-		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst",
+		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "almalinux-8-genericcloud.raw", "almalinux-8-genericcloud.qcow2"},
+		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSAlmaLinux10,
@@ -302,13 +303,63 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 
 		_ = outFile.Close()
 
-		// Rename temp part file to final image
-		if err := os.Rename(tempPath, finalPath); err != nil {
-			s.mu.Lock()
-			dlStatus.Status = "error"
-			dlStatus.Error = err.Error()
-			s.mu.Unlock()
-			return
+		// If downloaded image is QCOW2 and destination is .raw or .raw.zstd, convert using qemu-img
+		if strings.HasSuffix(strings.ToLower(targetURL), ".qcow2") {
+			if qemuPath, err := exec.LookPath("qemu-img"); err == nil {
+				slog.Info("converting downloaded QCOW2 image to raw sparse disk format", "os", targetOS, "temp", tempPath)
+				s.mu.Lock()
+				dlStatus.Status = "converting"
+				dlStatus.Progress = 90
+				s.mu.Unlock()
+
+				rawPath := filepath.Join(s.imageDir, fmt.Sprintf("%s-genericcloud.raw", targetOS))
+				cmd := exec.CommandContext(context.Background(), qemuPath, "convert", "-f", "qcow2", "-O", "raw", tempPath, rawPath)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					s.mu.Lock()
+					dlStatus.Status = "error"
+					dlStatus.Error = fmt.Sprintf("qemu-img conversion failed: %s (%v)", string(out), err)
+					s.mu.Unlock()
+					_ = os.Remove(tempPath)
+					return
+				}
+				_ = os.Remove(tempPath)
+
+				// Compress to zstd if final destination is .zstd or .zst
+				if strings.HasSuffix(finalPath, ".zstd") || strings.HasSuffix(finalPath, ".zst") {
+					if zstdPath, err := exec.LookPath("zstd"); err == nil {
+						slog.Info("compressing raw disk image with zstd", "os", targetOS, "raw", rawPath, "dest", finalPath)
+						zstdCmd := exec.CommandContext(context.Background(), zstdPath, "--rm", "-3", rawPath, "-o", finalPath)
+						if out, err := zstdCmd.CombinedOutput(); err != nil {
+							slog.Warn("zstd compression failed, keeping uncompressed raw image", "error", err, "output", string(out))
+							finalPath = rawPath
+						}
+					} else {
+						finalPath = rawPath
+					}
+				} else {
+					finalPath = rawPath
+				}
+			} else {
+				// qemu-img not available, keep downloaded image as qcow2
+				qcowPath := filepath.Join(s.imageDir, fmt.Sprintf("%s-genericcloud.qcow2", targetOS))
+				if err := os.Rename(tempPath, qcowPath); err != nil {
+					s.mu.Lock()
+					dlStatus.Status = "error"
+					dlStatus.Error = err.Error()
+					s.mu.Unlock()
+					return
+				}
+				finalPath = qcowPath
+			}
+		} else {
+			// Rename temp part file to final image
+			if err := os.Rename(tempPath, finalPath); err != nil {
+				s.mu.Lock()
+				dlStatus.Status = "error"
+				dlStatus.Error = err.Error()
+				s.mu.Unlock()
+				return
+			}
 		}
 
 		s.mu.Lock()

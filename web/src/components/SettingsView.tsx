@@ -152,9 +152,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     loadImages();
   }, []);
 
-  // Poll image status if any download is active
+  // Poll image status if any download or conversion is active
   useEffect(() => {
-    const hasActiveDownload = images.some((img) => img.downloadStatus?.status === 'downloading');
+    const hasActiveDownload = images.some(
+      (img) => img.downloadStatus?.status === 'downloading' || img.downloadStatus?.status === 'converting'
+    );
     if (!hasActiveDownload && !isDownloadingImage) return;
 
     const interval = setInterval(() => {
@@ -1895,7 +1897,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {images.map((img) => {
-                    const isDownloading = img.downloadStatus?.status === 'downloading' || isDownloadingImage === img.os;
+                    const isDownloading =
+                      img.downloadStatus?.status === 'downloading' ||
+                      img.downloadStatus?.status === 'converting' ||
+                      isDownloadingImage === img.os;
                     const progress = img.downloadStatus?.progress || 0;
 
                     return (
@@ -1925,7 +1930,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             <div className="space-y-1">
                               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400">
                                 <RefreshCw className="h-3 w-3 animate-spin" />
-                                <span>Downloading ({progress}%)</span>
+                                <span>{img.downloadStatus?.status === 'converting' ? `Converting (${progress}%)` : `Downloading (${progress}%)`}</span>
                               </span>
                               <div className="w-28 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                                 <div
@@ -1933,6 +1938,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                   style={{ width: `${Math.max(5, progress)}%` }}
                                 />
                               </div>
+                            </div>
+                          ) : img.downloadStatus?.status === 'error' ? (
+                            <div className="space-y-0.5">
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-red-950/80 text-red-400 border border-red-800/60"
+                                title={img.downloadStatus.error}
+                              >
+                                <AlertTriangle className="h-3 w-3" />
+                                <span>FAILED</span>
+                              </span>
+                              {img.downloadStatus.error && (
+                                <p className="text-[10px] text-red-400 max-w-[140px] truncate" title={img.downloadStatus.error}>
+                                  {img.downloadStatus.error}
+                                </p>
+                              )}
                             </div>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">

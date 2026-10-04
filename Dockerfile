@@ -54,7 +54,8 @@ RUN apk add --no-cache \
     tzdata \
     curl \
     zstd \
-    gptfdisk
+    gptfdisk \
+    qemu-img
 
 # Prepare application and runtime data paths
 RUN mkdir -p \

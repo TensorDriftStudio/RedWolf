@@ -20,3 +20,4 @@ data/
 assets/discovery/*.img
 assets/discovery/*.cpio.gz
 assets/discovery/vmlinuz
+assets/discovery/SHA256SUMS

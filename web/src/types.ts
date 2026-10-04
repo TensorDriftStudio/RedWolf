@@ -133,7 +133,7 @@ export interface OSImageDownloadStatus {
   totalBytes: number;
   copiedBytes: number;
   progress: number;
-  status: 'downloading' | 'completed' | 'error';
+  status: 'downloading' | 'converting' | 'completed' | 'error';
   error?: string;
 }
 
