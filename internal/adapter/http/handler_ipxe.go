@@ -104,7 +104,7 @@ echo ========================================================
 echo RedWolf Discovery Agent (In-Memory RAMdisk)
 echo Streaming kernel and discovery environment over HTTP...
 echo ========================================================
-kernel %s/assets/discovery/vmlinuz console=tty0 console=ttyS0,115200n8 initrd=initramfs.img redwolf.server=%s
+kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
 `, serverURL, serverURL, serverURL)
@@ -124,7 +124,7 @@ echo RedWolf Bare-Metal Provisioning Engine
 echo Node ID: %s
 echo Target Drive: %s
 echo ========================================================
-kernel %s/assets/discovery/vmlinuz console=tty0 console=ttyS0,115200n8 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf.server=%s
+kernel %s/assets/discovery/vmlinuz console=ttyS0,115200n8 console=tty0 initrd=initramfs.img redwolf.mode=provision redwolf.node_id=%s redwolf.server=%s
 initrd %s/assets/discovery/initramfs.img
 boot
 `, node.ID, targetDrive, serverURL, node.ID, serverURL, serverURL)

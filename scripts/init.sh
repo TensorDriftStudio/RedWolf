@@ -25,6 +25,9 @@ mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs tmpfs /run
 
+# Reopen standard streams to guarantee console visibility on screen
+exec 0</dev/console 1>/dev/console 2>/dev/console
+
 # Banner output
 cat << 'EOF'
 ================================================================================
@@ -157,6 +160,22 @@ fi
 
 # 7. Debug Shell or System Shutdown / Reboot
 if [ "$DEBUG_MODE" -eq 1 ] || [ "$EXIT_CODE" -ne 0 ]; then
+    echo ""
+    echo "[RedWolf Init] ================= DIAGNOSTIC DUMP ================="
+    echo "[RedWolf Init] Network Interfaces:"
+    ip -br link 2>/dev/null || ip link 2>/dev/null || true
+    echo ""
+    echo "[RedWolf Init] IP Addresses:"
+    ip -br addr 2>/dev/null || ip addr 2>/dev/null || true
+    echo ""
+    echo "[RedWolf Init] Storage Block Devices:"
+    lsblk 2>/dev/null || cat /proc/partitions 2>/dev/null || true
+    echo ""
+    echo "[RedWolf Init] Loaded Kernel Modules:"
+    lsmod 2>/dev/null || true
+    echo "[RedWolf Init] ==================================================="
+    echo ""
+
     if [ "$DEBUG_MODE" -eq 1 ]; then
         echo "[RedWolf Init] Debug flag active. Spawning interactive rescue shell..."
         /bin/sh

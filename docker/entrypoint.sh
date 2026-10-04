@@ -17,10 +17,11 @@ export REDWOLF_HTTP_PORT REDWOLF_PROVISIONING_INTERFACE REDWOLF_DB_PATH REDWOLF_
 # Create required runtime directories
 mkdir -p "$(dirname "$REDWOLF_DB_PATH")" "$REDWOLF_IMAGE_DIR" "$REDWOLF_TFTP_DIR" "$REDWOLF_CONF_DIR" "$REDWOLF_LOG_DIR"
 
-# Seed embedded discovery boot assets into persistent image directory if empty
-if [ -d "/usr/share/redwolf/assets/discovery" ] && [ ! -d "$REDWOLF_IMAGE_DIR/discovery" ]; then
-    echo "📦 Seeding discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
-    cp -a /usr/share/redwolf/assets/discovery "$REDWOLF_IMAGE_DIR/"
+# Seed / update embedded discovery boot assets into persistent image directory
+if [ -d "/usr/share/redwolf/assets/discovery" ]; then
+    echo "📦 Synchronizing discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
+    mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
+    cp -u -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || cp -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
 fi
 
 # Seed embedded TFTP bootloaders (ipxe.efi, undionly.kpxe) if missing in persistent directory
