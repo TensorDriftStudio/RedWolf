@@ -59,15 +59,20 @@ virtio_pci
 virtio_net
 virtio_blk
 virtio_scsi
+vmxnet3
+vmw_pvscsi
+mptspi
+e1000
 "
 
 for drv in $DRIVERS; do
     modprobe "$drv" 2>/dev/null || true
 done
 
-# Coldplug uevents trigger to discover any remaining devices
+# Coldplug uevents trigger and modalias auto-loading for all bus devices (PCI, USB, etc.)
 if [ -d /sys/bus ]; then
     find /sys/devices -name uevent -exec sh -c 'echo add > "{}" 2>/dev/null' \; 2>/dev/null || true
+    find /sys/bus -name modalias -exec sh -c 'cat "{}" 2>/dev/null | xargs -r modprobe 2>/dev/null' \; 2>/dev/null || true
     mdev -s
 fi
 
