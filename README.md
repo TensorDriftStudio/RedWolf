@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.1.0%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.2.0%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -225,7 +225,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.1.0` — Immutable release version
+  * `wolverandover/redwolf:1.2.0` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -284,7 +284,7 @@ RedWolf/
 ├── AGENTS.md                  # Mandatory AI context & engineering guidelines (English only)
 ├── README.md                  # Main project documentation (this file)
 ├── CHANGELOG.md               # Keep a Changelog semantic release history
-├── VERSION                    # SemVer release tag (1.1.0)
+├── VERSION                    # SemVer release tag (1.2.0)
 ├── Dockerfile                 # Multi-stage production container build (Web UI + Go Core + Assets)
 ├── docker-compose.yml         # Host-networking appliance deployment
 ├── docker-compose.macvlan.yml # Isolated physical interface Macvlan deployment
@@ -334,16 +334,22 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.1.0 — Enterprise Release (Current)
+### ✅ Version 1.2.0 — Enterprise Storage & Platform Release (Current)
+- [x] **Full LVM Provisioning Engine:** Complete LVM Volume Group (`vg_system`) and Logical Volume allocation engine with dynamic disk-capacity auto-fit in the Web UI.
+- [x] **Cross-Vendor Software RAID (`mdadm`):** Automated RAID 0, 1, 5, 10 array creation for AlmaLinux and Debian with dual `mdadm.conf` sync and redundant EFI bootloader replication.
+- [x] **Dynamic Partition Auto-Expansion:** Deterministic GPT root partition boundary repair (`parted resizepart`, `partprobe`) with online filesystem growth (`xfs_growfs` / `resize2fs`).
+- [x] **Modern LTS OS Catalog:** Added official **AlmaLinux 10** and **Debian 13 LTS** cloud raw images with direct automated download pipelines.
+- [x] **Enterprise Discovery Asset Pipeline:** Prebuilt Alpine discovery RAMdisk release workflow (`initramfs.img`, `vmlinuz`) with automatic entrypoint download fallback.
+
+### ✅ Version 1.1.0 — Enterprise Release
 - [x] **Enterprise Semantic Versioning (SemVer):** Added `internal/version`, `GET /api/version` endpoint, Docker `-ldflags` injection, `VERSION`, and `CHANGELOG.md`.
 - [x] **Branding & UI Standardization:** Unified application as **RedWolf GUI** with official vector logo and removed all temporary placeholder icons.
 - [x] **Production Security Hardening:** Eliminated default credential hints and quick-fills from the login interface; added `ipmitool` package to production container.
 - [x] **Dynamic Subnet & DNS Engine:** Integrated dynamic `dhcp-range`, `dhcp-boot`, and DNS option management in `dnsmasq` adapter with live subprocess reload on configuration changes.
 - [x] **Automated OS Image Management:** Background cloud raw image downloader (`internal/service/image_catalog.go`) with live progress tracking in the Settings UI.
 - [x] **Fleet Node Lifecycle Management:** Interactive node state reset (`POST /api/nodes/{id}/reset`) and decommission (`DELETE /api/nodes/{id}`).
-- [x] **Performance Optimization:** Added Docker bind mounts for instantaneous frontend loading without requiring 600MB container rebuilds.
 
-### ⏳ Version 1.2.0 — Hardware Management & Observability (Next)
+### ⏳ Version 1.3.0 — Hardware Management & Observability (Next)
 - [ ] **Redfish Out-of-Band Firmware Management:** Automated BIOS, iDRAC, and BMC firmware updates via DMTF Redfish API.
 - [ ] **RAID Controller In-Band Configuration:** Automated hardware virtual disk array creation (RAID 0, 1, 5, 10) on Broadcom/LSI MegaRAID, Dell PERC, and Microsemi SmartRAID controllers via `storcli` / `perccli`.
 - [ ] **Hardware Pre-Provisioning Stress Testing:** Automated RAM, CPU, and NVMe SMART endurance burn-in tests (`memtester`, `stress-ng`, `nvme-cli`) before marking nodes "Ready for Provisioning".

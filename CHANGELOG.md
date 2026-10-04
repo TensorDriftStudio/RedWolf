@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-10-04 (Storage & Platform Release)
+
+### Added
+- **Full Logical Volume Manager (LVM) Provisioning Engine:**
+  - Automated GPT partitioning (`512MB ESP`, `1024MB /boot`, `8e00 LVM PV`).
+  - Dynamic Volume Group (`vg_system`) creation with proportional logical volume layout (`lv_root`, `lv_var`, `lv_home`, `lv_tmp`, `lv_swap`).
+  - Hierarchical mounting, root filesystem loop copy, UUID-matched `/etc/fstab` generation, and EFI bootloader registration.
+  - Interactive drive-capacity allocator in Web UI with real-time capacity meters and one-click "Auto-fit to Drive" scaling.
+- **Cross-Vendor Software RAID (`mdadm`) Provisioning:**
+  - Support for RAID 0, RAID 1, RAID 5, and RAID 10 configurations across multiple storage drives.
+  - Dual `mdadm.conf` generation (`/etc/mdadm.conf` for AlmaLinux/RHEL and `/etc/mdadm/mdadm.conf` for Debian/Ubuntu).
+  - Redundant FAT32 ESP formatting with `dosfstools` and multi-drive EFI bootloader replication.
+- **Dynamic Partition Auto-Expansion:**
+  - Deterministic GPT root partition boundary repair (`parted resizepart`, `partprobe`) on official cloud raw images.
+  - Online filesystem growth support (`xfs_growfs` for XFS on AlmaLinux, `resize2fs` for ext4 on Debian).
+- **Modern LTS Operating System Catalog:**
+  - Added official **AlmaLinux 10** and **Debian 13 LTS** cloud raw images with direct automated download pipelines.
+  - Pre-flight image availability checks in Provisioning Wizard preventing deployment of uncached images.
+- **Enterprise Discovery Asset Automation:**
+  - Added `scripts/download-discovery.sh` to download prebuilt discovery ramdisks from official GitHub Releases.
+  - Added automatic release pipeline (`.github/workflows/release.yml`) for discovery boot assets and multi-registry container publishing.
+  - Added runtime fallback in `entrypoint.sh` to fetch prebuilt discovery assets if absent.
+
+---
+
 ## [1.1.0] - 2026-10-02 (Enterprise Release)
 
 ### Added

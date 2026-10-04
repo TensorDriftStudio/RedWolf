@@ -18,10 +18,25 @@ export REDWOLF_HTTP_PORT REDWOLF_PROVISIONING_INTERFACE REDWOLF_DB_PATH REDWOLF_
 mkdir -p "$(dirname "$REDWOLF_DB_PATH")" "$REDWOLF_IMAGE_DIR" "$REDWOLF_TFTP_DIR" "$REDWOLF_CONF_DIR" "$REDWOLF_LOG_DIR"
 
 # Seed / update embedded discovery boot assets into persistent image directory
-if [ -d "/usr/share/redwolf/assets/discovery" ]; then
+if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/assets/discovery/initramfs.img" ]; then
     echo "📦 Synchronizing discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
     mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
     cp -u -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || cp -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
+fi
+
+# Automatic Fallback: If discovery assets are missing, download official prebuilt release artifacts
+if [ ! -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ] || [ ! -f "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" ]; then
+    echo "🌐 Discovery RAMdisk missing in $REDWOLF_IMAGE_DIR/discovery."
+    echo "📦 Attempting automatic download of prebuilt discovery assets from GitHub Releases..."
+    mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
+    RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.0}"
+    RELEASE_BASE_URL="https://github.com/TensorDriftStudio/RedWolf/releases/download/${RELEASE_TAG}"
+    if curl -f -sSL "${RELEASE_BASE_URL}/initramfs.img" -o "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" 2>/dev/null && \
+       curl -f -sSL "${RELEASE_BASE_URL}/vmlinuz" -o "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" 2>/dev/null; then
+        echo "✅ Prebuilt discovery assets successfully downloaded from GitHub Releases."
+    else
+        echo "⚠️  Discovery assets not found locally or on CDN. Build locally using ./scripts/build-discovery-ramfs.sh if needed."
+    fi
 fi
 
 # Seed embedded TFTP bootloaders (ipxe.efi, undionly.kpxe) if missing in persistent directory

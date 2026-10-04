@@ -519,7 +519,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             Settings
           </h2>
           <span className="font-mono text-[10px] text-slate-400 bg-[#151b24] border border-[#212836] px-1.5 py-0.2 rounded">
-            {versionInfo?.version || 'v1.1.0'}
+            {versionInfo?.version || 'v1.2.0'}
           </span>
           {versionInfo && (
             <span className="hidden md:inline text-slate-500 font-mono text-[10px]">
