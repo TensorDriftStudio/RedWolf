@@ -96,8 +96,24 @@ jobs:
             RAW_TAG="${GITHUB_REF_NAME}"
           fi
           VERSION="${RAW_TAG#v}"
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           echo "tag=${RAW_TAG}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "build_date=${BUILD_DATE}" >> $GITHUB_OUTPUT
+
+      - name: Determine Container Tags
+        id: tags
+        run: |
+          TAGS="ghcr.io/tensordriftstudio/redwolf:${{ steps.meta.outputs.version }}
+          ghcr.io/tensordriftstudio/redwolf:latest"
+          if [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            TAGS="${TAGS}
+          wolverandover/redwolf:${{ steps.meta.outputs.version }}
+          wolverandover/redwolf:latest"
+          fi
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          echo "${TAGS}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_TOKEN != ''
@@ -124,9 +140,5 @@ jobs:
           build-args: |
             VERSION=v${{ steps.meta.outputs.version }}
             GIT_COMMIT=${{ github.sha }}
-            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          tags: |
-            wolverandover/redwolf:${{ steps.meta.outputs.version }}
-            wolverandover/redwolf:latest
-            ghcr.io/tensordriftstudio/redwolf:${{ steps.meta.outputs.version }}
-            ghcr.io/tensordriftstudio/redwolf:latest
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          tags: ${{ steps.tags.outputs.tags }}

@@ -29,9 +29,9 @@ ARG GIT_COMMIT=release
 ARG BUILD_DATE=""
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w \
-    -X 'github.com/tensordriftstudio/redwolf/internal/version.Version=${VERSION}' \
-    -X 'github.com/tensordriftstudio/redwolf/internal/version.GitCommit=${GIT_COMMIT}' \
-    -X 'github.com/tensordriftstudio/redwolf/internal/version.BuildDate=${BUILD_DATE}'" \
+    -X github.com/tensordriftstudio/redwolf/internal/version.Version=${VERSION} \
+    -X github.com/tensordriftstudio/redwolf/internal/version.GitCommit=${GIT_COMMIT} \
+    -X github.com/tensordriftstudio/redwolf/internal/version.BuildDate=${BUILD_DATE}" \
     -o /bin/redwolf ./cmd/redwolf && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/redwolf-discovery ./cmd/redwolf-discovery
 
