@@ -43,9 +43,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// Permissive CORS for development dashboard access
+	// Configurable CORS for enterprise security compliance
+	allowedOrigins := []string{"*"}
+	if customOrigins := os.Getenv("REDWOLF_CORS_ALLOWED_ORIGINS"); customOrigins != "" {
+		allowedOrigins = strings.Split(customOrigins, ",")
+		for i := range allowedOrigins {
+			allowedOrigins[i] = strings.TrimSpace(allowedOrigins[i])
+		}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},

@@ -64,7 +64,7 @@ export function useNodes() {
                 stage: `Initiating ${config.os} deployment...`,
                 os: config.os,
                 targetDrive: config.targetDrivePath,
-                targetIp: config.networkMode === 'static' ? config.staticIp || '10.10.100.25' : 'DHCP',
+                targetIp: config.networkMode === 'static' ? config.staticIp || 'Static' : 'DHCP',
                 logs: [`Deployment session dispatched to RedWolf Core`],
               },
             };

@@ -3,8 +3,25 @@ import type { ServerNode, DeploymentConfig, OperatingSystem, CloudInitTemplate, 
 import { getAuthHeaders } from '../utils/auth';
 import { VendorBadge } from './Badges';
 import { 
-  X, Check, ArrowRight, ArrowLeft, HardDrive, Play, Loader2, Terminal, FileCode, ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Plus, Trash2, Layers
+  X, Check, ArrowRight, ArrowLeft, HardDrive, Play, Loader2, Terminal, FileCode, ChevronDown, ChevronUp, CheckCircle2, AlertCircle, Plus, Trash2, Layers, Eye, EyeOff, RefreshCw
 } from 'lucide-react';
+
+const generateUniversalPassword = (): string => {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%^&*';
+  const all = upper + lower + digits + symbols;
+  let pass = '';
+  pass += upper[Math.floor(Math.random() * upper.length)];
+  pass += lower[Math.floor(Math.random() * lower.length)];
+  pass += digits[Math.floor(Math.random() * digits.length)];
+  pass += symbols[Math.floor(Math.random() * symbols.length)];
+  for (let i = 4; i < 16; i++) {
+    pass += all[Math.floor(Math.random() * all.length)];
+  }
+  return pass.split('').sort(() => 0.5 - Math.random()).join('');
+};
 
 interface ProvisioningWizardProps {
   node: ServerNode | null;
@@ -80,12 +97,13 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
     const gb = rawBytes > 0 ? Math.floor(rawBytes / (1024 * 1024 * 1024)) : 20;
     return getDefaultLVM(gb).swap;
   });
-  const [networkMode, setNetworkMode] = useState<'static' | 'dhcp'>('static');
-  const [staticIp, setStaticIp] = useState('10.10.100.25');
-  const [gateway, setGateway] = useState('10.10.100.1');
+  const [networkMode, setNetworkMode] = useState<'static' | 'dhcp'>('dhcp');
+  const [staticIp, setStaticIp] = useState('');
+  const [gateway, setGateway] = useState('');
   const [dns, setDns] = useState('1.1.1.1, 8.8.8.8');
   const [enableBonding, setEnableBonding] = useState(false);
-  const [rootPassword, setRootPassword] = useState('RedWolf#2026!');
+  const [rootPassword, setRootPassword] = useState<string>(() => generateUniversalPassword());
+  const [showPassword, setShowPassword] = useState<boolean>(false);
   const [sshKey, setSshKey] = useState('');
 
   // OS Distribution Images State
@@ -767,7 +785,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                       type="text"
                       value={staticIp}
                       onChange={(e) => setStaticIp(e.target.value)}
-                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs focus:border-redwolf-primary focus:outline-none"
+                      placeholder="e.g. 192.168.10.50"
+                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs placeholder-slate-600 focus:border-redwolf-primary focus:outline-none"
                     />
                   </div>
                   <div>
@@ -776,7 +795,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                       type="text"
                       value={gateway}
                       onChange={(e) => setGateway(e.target.value)}
-                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs focus:border-redwolf-primary focus:outline-none"
+                      placeholder="e.g. 192.168.10.1"
+                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs placeholder-slate-600 focus:border-redwolf-primary focus:outline-none"
                     />
                   </div>
                   <div className="col-span-2">
@@ -785,7 +805,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                       type="text"
                       value={dns}
                       onChange={(e) => setDns(e.target.value)}
-                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs focus:border-redwolf-primary focus:outline-none"
+                      placeholder="1.1.1.1, 8.8.8.8"
+                      className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs placeholder-slate-600 focus:border-redwolf-primary focus:outline-none"
                     />
                   </div>
                 </div>
@@ -854,13 +875,35 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
               </div>
               
               <div>
-                <label className="block text-[11px] font-medium text-slate-400 mb-1">Root Password</label>
-                <input
-                  type="password"
-                  value={rootPassword}
-                  onChange={(e) => setRootPassword(e.target.value)}
-                  className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] p-1.5 font-mono text-white text-xs focus:border-redwolf-primary focus:outline-none"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-medium text-slate-400">Root Password</label>
+                  <button
+                    type="button"
+                    onClick={() => setRootPassword(generateUniversalPassword())}
+                    className="flex items-center gap-1 text-[10px] text-sky-400 hover:text-sky-300 transition-colors"
+                    title="Generate new cryptographically random 16-character RFC-compliant password"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Generate New</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={rootPassword}
+                    onChange={(e) => setRootPassword(e.target.value)}
+                    placeholder="Enter root password or generate"
+                    className="w-full rounded-sm border border-[#232b3b] bg-[#0c0e14] py-1.5 pl-2.5 pr-8 font-mono text-white text-xs focus:border-redwolf-primary focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
               </div>
 
               <div>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -41,7 +42,10 @@ func (s *UserService) EnsureDefaultAdmin(ctx context.Context) error {
 
 	slog.InfoContext(ctx, "no operator accounts discovered; provisioning default emergency administrator")
 
-	defaultPassword := "admin" // Standard bootstrap password, prompt change on setup
+	defaultPassword := os.Getenv("REDWOLF_ADMIN_PASSWORD")
+	if defaultPassword == "" {
+		defaultPassword = "admin" // Standard bootstrap password, prompt change on setup
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(defaultPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed hashing bootstrap admin password: %w", err)

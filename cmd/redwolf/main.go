@@ -101,6 +101,9 @@ func main() {
 	// 6. Initialize Core Domain Provisioner, BMC Escrow Vault & BMC Power Manager
 	prov := service.NewProvisioner(repo, eventBus)
 	vaultKey := getEnv("REDWOLF_VAULT_KEY", "redwolf-master-key-datacenter-default-256")
+	if os.Getenv("REDWOLF_VAULT_KEY") == "" {
+		slog.Warn("REDWOLF_VAULT_KEY not set; using default datacenter encryption key. Configure a custom master key in production environments.")
+	}
 	bmcEscrow := service.NewBMCEscrowService(repo.DB(), vaultKey, repo, eventBus)
 	bmcMgr := service.NewBMCManager(repo, bmcEscrow)
 	bmcEscrow.SetBMCManager(bmcMgr)

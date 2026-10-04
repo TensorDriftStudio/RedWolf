@@ -2141,8 +2141,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
                       >
                         <option value="All">All Supported Distributions</option>
+                        <option value="AlmaLinux 10">AlmaLinux 10</option>
                         <option value="AlmaLinux 9">AlmaLinux 9</option>
                         <option value="AlmaLinux 8">AlmaLinux 8</option>
+                        <option value="Debian 13">Debian 13</option>
                         <option value="Debian 12">Debian 12</option>
                       </select>
                     </div>
