@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Server, 
   FileCode, 
@@ -6,8 +6,7 @@ import {
   Network, 
   KeyRound, 
   ChevronLeft, 
-  ChevronRight, 
-  Radio
+  ChevronRight
 } from 'lucide-react';
 
 export type NavSection = 'fleet' | 'templates' | 'storage' | 'network' | 'auth';
@@ -18,7 +17,7 @@ interface SidebarProps {
   onNavigate: (view: 'fleet' | 'settings', tab?: 'auth' | 'network' | 'storage' | 'templates') => void;
   nodeCount: number;
   templateCount: number;
-  isConnected: boolean;
+  isConnected?: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
 }
@@ -29,10 +28,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNavigate,
   nodeCount,
   templateCount,
-  isConnected,
   isCollapsed,
   onToggleCollapse,
 }) => {
+  const [version, setVersion] = useState<string>('1.2.4');
+
+  useEffect(() => {
+    fetch('/api/version')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { version?: string } | null) => {
+        if (data?.version) {
+          setVersion(data.version.replace(/^v/, ''));
+        }
+      })
+      .catch(() => {});
+  }, []);
   const isItemActive = (view: 'fleet' | 'settings', tab?: 'auth' | 'network' | 'storage' | 'templates') => {
     if (view === 'fleet') {
       return currentView === 'fleet';
@@ -71,7 +81,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {!isCollapsed && (
               <div className="flex items-baseline gap-1.5 overflow-hidden">
                 <span className="font-bold tracking-tight text-white text-sm">REDWOLF</span>
-                <span className="text-[10px] font-mono text-slate-500">1.2.1</span>
+                <span className="text-[10px] font-mono text-slate-500">{version}</span>
               </div>
             )}
           </div>
@@ -187,24 +197,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         </nav>
       </div>
-
-      {/* Sidebar Footer: Real-time link status */}
-      <div className="p-2 border-t border-[#1e2430] bg-[#0c0e14]">
-        <div 
-          className={`flex items-center gap-2 px-2 py-1.5 rounded text-[11px] font-mono ${
-            isCollapsed ? 'justify-center' : ''
-          } ${
-            isConnected ? 'text-emerald-400' : 'text-rose-400'
-          }`}
-          title={isConnected ? 'Connected to live event daemon' : 'Disconnected from event daemon'}
-        >
-          <Radio className={`w-3.5 h-3.5 shrink-0 ${isConnected ? 'text-emerald-400' : 'text-rose-400'}`} />
-          {!isCollapsed && (
-            <span className="font-semibold">{isConnected ? 'LIVE' : 'OFFLINE'}</span>
-          )}
-        </div>
-      </div>
-
     </aside>
   );
 };

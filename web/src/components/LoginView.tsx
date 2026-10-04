@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { AuthSource } from '../types';
 
 interface LoginViewProps {
@@ -12,6 +12,18 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, isLoading, error 
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [version, setVersion] = useState<string>('1.2.4');
+
+  useEffect(() => {
+    fetch('/api/version')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { version?: string } | null) => {
+        if (data?.version) {
+          setVersion(data.version.replace(/^v/, ''));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,7 +138,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, isLoading, error 
 
         {/* Footer */}
         <div className="py-2.5 px-4 bg-[#0c0e14] border-t border-[#212836] text-center text-[10px] text-slate-500 font-mono">
-          RedWolf v1.2.1
+          RedWolf v{version}
         </div>
       </div>
     </div>

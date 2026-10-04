@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Hardened `findRootPartitionFromJSON` and `detectRootPartNumber` to prioritize verified Linux root filesystem types and ignore `/boot` and `ESP` partitions.
   - Corrected EFI partition resolution in `detectEFIPartition` and `parseEFIPartitionFromJSON`, ensuring partition 1 EFI system partitions are correctly detected and registered in UEFI NVRAM.
 
+- **UI Streamlining & Version Dynamic Synchronization:**
+  - Removed redundant `"LIVE"` daemon connection status indicator from the sidebar footer.
+  - Removed `"Scan Network"` trigger button from the top navigation bar.
+  - Removed `"Subnet: ..."` badge from the Servers view header.
+  - Synchronized frontend dashboard version dynamically with `GET /api/version`, eliminating stale hardcoded version tags in the Sidebar and LoginView.
+  - Updated `docker/entrypoint.sh` to force-sync (`cp -f -a`) embedded discovery assets and TFTP bootloaders into persistent volumes upon container startup.
+
 ---
 
 ## [1.2.3] - 2026-10-04 (Storage & Partitioning Resilience Release)

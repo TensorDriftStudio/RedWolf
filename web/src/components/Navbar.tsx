@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { RefreshCw, Search, LogOut, ChevronRight } from 'lucide-react';
+import { Search, LogOut, ChevronRight } from 'lucide-react';
 import type { User } from '../types';
 
 interface NavbarProps {
-  onRefresh: () => void;
-  isRefreshing: boolean;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
   searchTerm: string;
   setSearchTerm: (s: string) => void;
   currentView: 'fleet' | 'settings';
@@ -15,8 +15,6 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
-  onRefresh,
-  isRefreshing,
   searchTerm,
   setSearchTerm,
   currentView,
@@ -76,19 +74,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="w-full rounded-sm border border-[#232b3b] bg-[#161b24] py-1 pl-8 pr-3 text-xs text-white placeholder-slate-500 focus:border-redwolf-primary focus:bg-[#181f2b] focus:outline-none transition-colors"
             />
           </div>
-        )}
-
-        {/* Scan Network Trigger */}
-        {currentView === 'fleet' && (
-          <button
-            onClick={onRefresh}
-            disabled={isRefreshing}
-            title="Scan provisioning subnet for network boot beacons"
-            className="flex items-center gap-1.5 rounded-sm border border-[#283244] bg-[#161c26] px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-[#1d2533] hover:border-slate-500 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3 w-3 text-slate-400 ${isRefreshing ? 'animate-spin text-redwolf-primary' : ''}`} />
-            <span className="hidden sm:inline">Scan Network</span>
-          </button>
         )}
 
         {/* User Profile Menu */}

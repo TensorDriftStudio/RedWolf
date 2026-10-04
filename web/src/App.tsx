@@ -22,7 +22,6 @@ export function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedVendor, setSelectedVendor] = useState<'ALL' | Vendor>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | NodeStatus>('ALL');
-  const [subnetCidr, setSubnetCidr] = useState<string>('192.168.0.0/24');
   const [templateCount, setTemplateCount] = useState<number>(0);
   
   // Collapsible AWX-style sidebar state
@@ -63,11 +62,6 @@ export function App() {
           return null;
         }
         return res.ok ? res.json() : null;
-      })
-      .then((data) => {
-        if (data?.network?.subnetCidr) {
-          setSubnetCidr(data.network.subnetCidr);
-        }
       })
       .catch(() => {});
   }, [isAuthenticated]);
@@ -221,26 +215,15 @@ export function App() {
                 loadSettings();
                 setCurrentView('fleet');
               }}
-              onSettingsSaved={(saved) => {
-                if (saved.network?.subnetCidr) {
-                  setSubnetCidr(saved.network.subnetCidr);
-                }
-              }}
             />
           ) : (
             <>
-              {/* Clean Section Title & Subnet */}
+              {/* Clean Section Title */}
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-[#212836]">
                 <div>
                   <h1 className="text-base font-bold text-white tracking-tight">
                     Servers
                   </h1>
-                </div>
-
-                <div className="flex items-center gap-2 text-xs font-mono">
-                  <span className="rounded-sm border border-[#212836] bg-[#151b24] px-2.5 py-1 text-slate-300">
-                    Subnet: <strong className="text-white">{subnetCidr}</strong>
-                  </span>
                 </div>
               </div>
 

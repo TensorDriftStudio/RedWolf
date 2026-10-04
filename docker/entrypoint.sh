@@ -21,7 +21,7 @@ mkdir -p "$(dirname "$REDWOLF_DB_PATH")" "$REDWOLF_IMAGE_DIR" "$REDWOLF_TFTP_DIR
 if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/assets/discovery/initramfs.img" ]; then
     echo "📦 Synchronizing discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
     mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
-    cp -u -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || cp -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
+    cp -f -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
 fi
 
 # Automatic Fallback: If discovery assets are missing, download official prebuilt release artifacts
@@ -39,10 +39,10 @@ if [ ! -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ] || [ ! -f "$REDWOLF_IMA
     fi
 fi
 
-# Seed embedded TFTP bootloaders (ipxe.efi, undionly.kpxe) if missing in persistent directory
+# Seed embedded TFTP bootloaders (ipxe.efi, undionly.kpxe) into persistent directory
 if [ -d "/usr/share/redwolf/assets/tftp" ]; then
     echo "📦 Seeding TFTP bootstrap loaders into $REDWOLF_TFTP_DIR..."
-    cp -n /usr/share/redwolf/assets/tftp/* "$REDWOLF_TFTP_DIR/" 2>/dev/null || cp -a /usr/share/redwolf/assets/tftp/* "$REDWOLF_TFTP_DIR/"
+    cp -f -a /usr/share/redwolf/assets/tftp/* "$REDWOLF_TFTP_DIR/" 2>/dev/null || true
 fi
 
 # Detect host interface IP for dynamic iPXE URL if not explicitly provided
