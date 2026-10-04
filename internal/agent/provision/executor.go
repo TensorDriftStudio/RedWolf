@@ -83,6 +83,12 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 		_ = reporter.Report(ctx, nodeID, pct, fmt.Sprintf("Streaming %s...", task.OS), msg)
 	}
 
+	// Pre-wipe target disk to eliminate previous partition tables, secondary GPT headers, and ghost partitions
+	_ = reporter.Report(ctx, nodeID, 5, "Preparing target disk...", fmt.Sprintf("Wiping signatures and partition tables on %s", streamTarget))
+	if err := WipeTargetDisk(ctx, streamTarget); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning during pre-wipe of target disk", "drive", streamTarget, "error", err)
+	}
+
 	// Stream image
 	if err := StreamImage(ctx, task.ImageURL, streamTarget, onProgress); err != nil {
 		return fmt.Errorf("streaming error: %w", err)
@@ -90,7 +96,7 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 
 	// Relocate secondary GPT header and expand root partition entry to end of disk
 	_ = reporter.Report(ctx, nodeID, 75, "Auto-expanding root partition...", "Relocating GPT header and expanding root partition to 100% capacity")
-	if err := RepairGPTHeader(ctx, streamTarget); err != nil {
+	if err := RepairGPTHeader(ctx, streamTarget, task.OS); err != nil {
 		slog.WarnContext(ctx, "non-fatal warning during gpt repair and expansion", "error", err)
 	}
 
@@ -103,7 +109,7 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 	// For multi-disk Software RAID, synchronize UEFI boot files to all member ESPs
 	if layout.IsSoftwareRAID && len(layout.MemberESPs) > 0 {
 		_ = reporter.Report(ctx, nodeID, 90, "Synchronizing RAID member ESPs...", "Writing redundant UEFI bootloaders to all drive ESPs")
-		if err := syncMemberESPs(ctx, layout.MemberESPs, streamTarget); err != nil {
+		if err := syncMemberESPs(ctx, layout.MemberESPs, streamTarget, task.OS); err != nil {
 			slog.WarnContext(ctx, "non-fatal warning synchronizing member ESPs", "error", err)
 		}
 	}
@@ -119,8 +125,8 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 	return nil
 }
 
-func syncMemberESPs(ctx context.Context, memberESPs []string, streamTarget string) error {
-	rootPart, err := findRootPartition(ctx, streamTarget)
+func syncMemberESPs(ctx context.Context, memberESPs []string, streamTarget string, osType ...domain.OperatingSystem) error {
+	rootPart, err := findRootPartition(ctx, streamTarget, osType...)
 	if err != nil {
 		return err
 	}
@@ -337,9 +343,9 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 
 func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, reporter ProgressReporter, nodeID string, osType domain.OperatingSystem) error {
 	// Source root detection
-	sourceRootPart, err := findRootPartition(ctx, loopDev)
+	sourceRootPart, err := findRootPartition(ctx, loopDev, osType)
 	if err != nil {
-		sourceRootPart = fallbackPartitionPath(loopDev)
+		sourceRootPart = fallbackPartitionPath(loopDev, osType)
 	}
 
 	srcRootMount := "/mnt/redwolf-source-root"
@@ -372,7 +378,7 @@ func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, rep
 	}
 
 	// Source EFI partition (partition 2 on AlmaLinux, 15 on Debian)
-	efiPartNum := detectEFIPartition(ctx, loopDev)
+	efiPartNum := detectEFIPartition(ctx, loopDev, osType)
 	srcEFIPart := resolvePartitionPath(loopDev, efiPartNum)
 	if _, err := os.Stat(srcEFIPart); err == nil {
 		srcEFIMount := "/mnt/redwolf-source-efi"

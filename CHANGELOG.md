@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.3] - 2026-10-04 (Storage & Partitioning Resilience Release)
+
+### Fixed
+- **Debian GenericCloud Root Partition Resolution:**
+  - Made root partition detection distribution-aware in `findRootPartition`, `findRootPartitionFromJSON`, and `fallbackPartitionPath`.
+  - Prioritized partition 1 (`ext4`) for Debian 12 / Debian 13 genericcloud images, preventing erroneous selection of stale partition 4 from prior RHEL/AlmaLinux installations.
+  - Hardened partition discovery heuristic against minimal initramfs environments where `FSType` may not be populated prior to filesystem mounting.
+- **Disk Pre-Wiping in Standard Streaming Engine:**
+  - Integrated `WipeTargetDisk` into `executeStandardDeployment` prior to image streaming to clear existing partition signatures via `wipefs`, execute `blkdiscard`, and zero out the first 32 MiB and last 32 MiB of the target drive.
+  - Eliminated stale primary and secondary GPT headers, ghost partitions, and kernel partition conflicts during bare-metal and VM reprovisioning.
+- **Distribution-Aware GPT Root Partition & EFI Expansion:**
+  - Updated `RepairGPTHeader`, `ExpandRootPartition`, and `detectRootPartNumber` to accept target `osType`, correctly expanding partition 1 to 100% capacity for Debian while preserving partition 4 expansion for AlmaLinux/RHEL.
+  - Updated `detectEFIPartition` to default to partition 15 for Debian and partition 2 for AlmaLinux during UEFI NVRAM bootloader registration.
+
+---
+
 ## [1.2.2] - 2026-10-04 (Security & Provisioning Release)
 
 ### Fixed

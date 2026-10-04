@@ -20,10 +20,11 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 	slog.InfoContext(ctx, "locating root partition for Cloud-Init NoCloud seed injection",
 		"target_drive", targetDrivePath,
 		"boot_mac", bootMAC,
+		"os", cfg.OS,
 	)
 
 	// Step 1: Detect root partition
-	rootPart, err := findRootPartition(ctx, targetDrivePath)
+	rootPart, err := findRootPartition(ctx, targetDrivePath, cfg.OS)
 	if err != nil {
 		return fmt.Errorf("failed detecting root partition on %s: %w", targetDrivePath, err)
 	}
@@ -33,8 +34,12 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		return fmt.Errorf("failed creating mount point %s: %w", mountPoint, err)
 	}
 
+	// Ensure device nodes are settled before mounting
+	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
+	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+
 	// Step 2: Mount target rootfs
-	slog.InfoContext(ctx, "mounting root partition", "partition", rootPart, "mountpoint", mountPoint)
+	slog.InfoContext(ctx, "mounting root partition", "partition", rootPart, "mountpoint", mountPoint, "os", cfg.OS)
 	mountCmd := exec.CommandContext(ctx, "mount", rootPart, mountPoint)
 	if out, err := mountCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed mounting partition %s to %s: %w (output: %s)", rootPart, mountPoint, err, string(out))
@@ -393,26 +398,37 @@ func collectPartitions(devices []partInfo) []partInfo {
 	return parts
 }
 
-func findRootPartition(ctx context.Context, targetDrivePath string) (string, error) {
+func findRootPartition(ctx context.Context, targetDrivePath string, osType ...domain.OperatingSystem) (string, error) {
 	realDev, err := filepath.EvalSymlinks(targetDrivePath)
 	if err != nil {
 		realDev = targetDrivePath
 	}
 
+	var targetOS domain.OperatingSystem
+	if len(osType) > 0 {
+		targetOS = osType[0]
+	}
+
 	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,PARTNUM", realDev)
 	out, err := cmd.Output()
 	if err != nil {
-		return fallbackPartitionPath(realDev), nil
+		return fallbackPartitionPath(realDev, targetOS), nil
 	}
 
-	partPath, err := findRootPartitionFromJSON(out, realDev)
+	partPath, err := findRootPartitionFromJSON(out, realDev, targetOS)
 	if err != nil {
-		return fallbackPartitionPath(realDev), nil
+		return fallbackPartitionPath(realDev, targetOS), nil
 	}
 	return partPath, nil
 }
 
-func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
+func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.OperatingSystem) (string, error) {
+	var targetOS domain.OperatingSystem
+	if len(osType) > 0 {
+		targetOS = osType[0]
+	}
+	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian")
+
 	var data partList
 	if err := json.Unmarshal(out, &data); err != nil {
 		return "", err
@@ -423,14 +439,38 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return "", fmt.Errorf("no partitions detected")
 	}
 
-	// 1. Look for explicit root in PARTLABEL or LABEL (e.g. AlmaLinux PARTLABEL="root")
+	// 1. If Debian, partition 1 is unequivocally the root partition in GenericCloud images
+	if isDebian {
+		for _, p := range parts {
+			num := extractTrailingDigits(p.Name)
+			if num == 1 || strings.HasSuffix(p.Path, "p1") || strings.HasSuffix(p.Path, "1") {
+				return p.Path, nil
+			}
+		}
+		for _, p := range parts {
+			if p.FSType == "ext4" {
+				return p.Path, nil
+			}
+		}
+		return fallbackPartitionPath(realDev, targetOS), nil
+	}
+
+	// 2. Look for explicit root in PARTLABEL or LABEL (e.g. AlmaLinux PARTLABEL="root")
 	for _, p := range parts {
 		if strings.Contains(strings.ToLower(p.PartLabel), "root") || strings.Contains(strings.ToLower(p.Label), "root") {
 			return p.Path, nil
 		}
 	}
 
-	// 2. Look for largest xfs or ext4 root filesystem
+	// 3. For AlmaLinux/RHEL standard cloud images, look for partition 4
+	for _, p := range parts {
+		num := extractTrailingDigits(p.Name)
+		if num == 4 {
+			return p.Path, nil
+		}
+	}
+
+	// 4. Look for largest xfs or ext4 root filesystem
 	var candidate string
 	var largestSize int64
 	for _, p := range parts {
@@ -446,7 +486,7 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return candidate, nil
 	}
 
-	// 3. Fallback to the largest partition overall
+	// 5. Fallback to the largest partition overall
 	for _, p := range parts {
 		size, _ := p.Size.Int64()
 		if size > largestSize {
@@ -458,12 +498,25 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return candidate, nil
 	}
 
-	return fallbackPartitionPath(realDev), nil
+	return fallbackPartitionPath(realDev, targetOS), nil
 }
 
-func fallbackPartitionPath(realDev string) string {
+func fallbackPartitionPath(realDev string, osType ...domain.OperatingSystem) string {
+	var targetOS domain.OperatingSystem
+	if len(osType) > 0 {
+		targetOS = osType[0]
+	}
+	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian")
+
+	if isDebian {
+		part1 := resolvePartitionPath(realDev, 1)
+		if _, err := os.Stat(part1); err == nil {
+			return part1
+		}
+		return resolvePartitionPath(realDev, 1)
+	}
+
 	// Standard enterprise cloud images: partition 4 for AlmaLinux/RHEL (partition 1=biosboot, 2=ESP, 3=boot, 4=root)
-	// Or partition 1 for Debian (partition 1=root, 15=ESP).
 	part4 := resolvePartitionPath(realDev, 4)
 	if _, err := os.Stat(part4); err == nil {
 		return part4

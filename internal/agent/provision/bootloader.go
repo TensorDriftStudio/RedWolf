@@ -38,7 +38,7 @@ func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType dom
 	}
 
 	label := fmt.Sprintf("RedWolf (%s)", osType)
-	partNum := detectEFIPartition(ctx, realDisk)
+	partNum := detectEFIPartition(ctx, realDisk, osType)
 
 	// Register boot entry on detected EFI system partition
 	cmd := exec.CommandContext(ctx, "efibootmgr",
@@ -176,14 +176,29 @@ func reorderBootOrder(entryID string, currentOrder []string) string {
 	return strings.Join(newOrder, ",")
 }
 
-func detectEFIPartition(ctx context.Context, realDisk string) int {
+func detectEFIPartition(ctx context.Context, realDisk string, osType ...domain.OperatingSystem) int {
+	var targetOS domain.OperatingSystem
+	if len(osType) > 0 {
+		targetOS = osType[0]
+	}
+	defaultPart := 1
+	if strings.Contains(strings.ToLower(string(targetOS)), "debian") {
+		defaultPart = 15
+	} else if strings.Contains(strings.ToLower(string(targetOS)), "almalinux") {
+		defaultPart = 2
+	}
+
 	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,PARTTYPE,FSTYPE,LABEL,TYPE", realDisk)
 	out, err := cmd.Output()
 	if err != nil {
-		return 1
+		return defaultPart
 	}
 
-	return parseEFIPartitionFromJSON(out)
+	partNum := parseEFIPartitionFromJSON(out)
+	if partNum == 1 && defaultPart != 1 {
+		return defaultPart
+	}
+	return partNum
 }
 
 func parseEFIPartitionFromJSON(out []byte) int {

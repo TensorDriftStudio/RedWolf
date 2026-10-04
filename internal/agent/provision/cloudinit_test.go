@@ -245,6 +245,121 @@ func TestFindRootPartition_PartLabelRoot(t *testing.T) {
 	}
 }
 
+func TestFindRootPartition_Debian13_NVMe(t *testing.T) {
+	// Official Debian 13 GenericCloud on NVMe (partitions 1, 14, 15, no "root" in labels)
+	debian13JSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 2048000000,
+						"type": "part",
+						"fstype": "ext4",
+						"label": ""
+					},
+					{
+						"name": "nvme0n1p14",
+						"path": "/dev/nvme0n1p14",
+						"size": 4194304,
+						"type": "part",
+						"fstype": null,
+						"label": ""
+					},
+					{
+						"name": "nvme0n1p15",
+						"path": "/dev/nvme0n1p15",
+						"size": 130023424,
+						"type": "part",
+						"fstype": "vfat",
+						"label": "ESP"
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(debian13JSON, "/dev/nvme0n1", domain.OSDebian13)
+	if err != nil {
+		t.Fatalf("failed finding Debian 13 root partition: %v", err)
+	}
+	if part != "/dev/nvme0n1p1" {
+		t.Errorf("expected /dev/nvme0n1p1 for Debian 13, got %s", part)
+	}
+}
+
+func TestFindRootPartition_Debian13_ResistantToStalePartition4(t *testing.T) {
+	// Disk with a stale partition 4 from prior AlmaLinux install (40GB)
+	// along with Debian 13 partitions (1, 14, 15).
+	// With domain.OSDebian13, it must select /dev/nvme0n1p1 and reject stale /dev/nvme0n1p4!
+	staleJSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 53687091200,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 2048000000,
+						"type": "part",
+						"fstype": "ext4",
+						"label": ""
+					},
+					{
+						"name": "nvme0n1p4",
+						"path": "/dev/nvme0n1p4",
+						"size": 42949672960,
+						"type": "part",
+						"fstype": null,
+						"label": null
+					},
+					{
+						"name": "nvme0n1p14",
+						"path": "/dev/nvme0n1p14",
+						"size": 4194304,
+						"type": "part",
+						"fstype": null,
+						"label": ""
+					},
+					{
+						"name": "nvme0n1p15",
+						"path": "/dev/nvme0n1p15",
+						"size": 130023424,
+						"type": "part",
+						"fstype": "vfat",
+						"label": "ESP"
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(staleJSON, "/dev/nvme0n1", domain.OSDebian13)
+	if err != nil {
+		t.Fatalf("failed finding Debian 13 root partition with stale p4: %v", err)
+	}
+	if part != "/dev/nvme0n1p1" {
+		t.Fatalf("expected /dev/nvme0n1p1 for Debian 13 despite larger stale partition 4, got %s", part)
+	}
+
+	// Conversely, for AlmaLinux 9, it should select partition 4
+	partAlma, err := findRootPartitionFromJSON(staleJSON, "/dev/nvme0n1", domain.OSAlmaLinux9)
+	if err != nil {
+		t.Fatalf("failed finding AlmaLinux root partition: %v", err)
+	}
+	if partAlma != "/dev/nvme0n1p4" {
+		t.Fatalf("expected /dev/nvme0n1p4 for AlmaLinux 9, got %s", partAlma)
+	}
+}
+
 func TestWriteNoCloudSeeds(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg := domain.DeploymentConfig{
