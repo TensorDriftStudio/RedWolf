@@ -53,6 +53,7 @@ RUN mkdir -p \
     /staging/sbin \
     /staging/usr/bin \
     /staging/usr/sbin \
+    /staging/usr/lib \
     /staging/usr/local/bin \
     /staging/etc \
     /staging/proc \
@@ -79,7 +80,9 @@ RUN cp -a /bin/* /staging/bin/ && \
     cp -a /usr/bin/* /staging/usr/bin/ && \
     cp -a /usr/sbin/* /staging/usr/sbin/ && \
     cp -a /lib/* /staging/lib/ && \
+    cp -a /usr/lib/* /staging/usr/lib/ && \
     ( [ -d /lib64 ] && mkdir -p /staging/lib64 && cp -a /lib64/* /staging/lib64/ || true ) && \
+    ( [ -d /usr/lib64 ] && mkdir -p /staging/usr/lib64 && cp -a /usr/lib64/* /staging/usr/lib64/ || true ) && \
     cp -a /etc/* /staging/etc/ && \
     mkdir -p /staging/usr/share/udhcpc && \
     cp -a /usr/share/udhcpc/* /staging/usr/share/udhcpc/
