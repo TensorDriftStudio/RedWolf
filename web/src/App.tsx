@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Navbar } from './components/Navbar';
 import { StatsBar } from './components/StatsBar';
@@ -52,7 +52,7 @@ export function App() {
   const [notification, setNotification] = useState<string | null>(null);
 
   // Dynamically query subnet configuration from Core settings
-  useEffect(() => {
+  const loadSettings = useCallback(() => {
     fetch('/api/settings', {
       headers: { ...getAuthHeaders() },
     })
@@ -63,7 +63,13 @@ export function App() {
         }
       })
       .catch(() => {});
-  }, [isAuthenticated]);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadSettings();
+    }
+  }, [isAuthenticated, loadSettings]);
 
   // Fetch template count for sidebar badge
   useEffect(() => {
@@ -115,6 +121,9 @@ export function App() {
 
   const handleNavigate = (view: 'fleet' | 'settings', tab?: 'auth' | 'network' | 'storage' | 'templates') => {
     setCurrentView(view);
+    if (view === 'fleet') {
+      loadSettings();
+    }
     if (tab) {
       setSettingsTab(tab);
     }
@@ -193,7 +202,15 @@ export function App() {
             <SettingsView 
               activeTab={settingsTab} 
               onTabChange={setSettingsTab}
-              onBackToFleet={() => setCurrentView('fleet')} 
+              onBackToFleet={() => {
+                loadSettings();
+                setCurrentView('fleet');
+              }}
+              onSettingsSaved={(saved) => {
+                if (saved.network?.subnetCidr) {
+                  setSubnetCidr(saved.network.subnetCidr);
+                }
+              }}
             />
           ) : (
             <>

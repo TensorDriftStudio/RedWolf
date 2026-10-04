@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +118,7 @@ func (s *SettingsService) loadFromDB(ctx context.Context) error {
 	if err := json.Unmarshal([]byte(val), &parsed); err != nil {
 		return err
 	}
+	sanitizeNetworkSubnet(&parsed)
 	s.cached = &parsed
 	return nil
 }
@@ -132,6 +135,7 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, settings domain.Sy
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	sanitizeNetworkSubnet(&settings)
 	settings.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(settings)
 	if err != nil {
@@ -150,10 +154,31 @@ func (s *SettingsService) UpdateSettings(ctx context.Context, settings domain.Sy
 
 	s.cached = &settings
 	slog.InfoContext(ctx, "system settings updated successfully",
+		"subnet_cidr", settings.Network.SubnetCIDR,
 		"ldap_enabled", settings.Auth.LDAP.Enabled,
 		"ad_enabled", settings.Auth.ActiveDirectory.Enabled,
 	)
 	return nil
+}
+
+func sanitizeNetworkSubnet(settings *domain.SystemSettings) {
+	if settings == nil {
+		return
+	}
+	targetIP := strings.TrimSpace(settings.Network.Gateway)
+	if targetIP == "" {
+		targetIP = strings.TrimSpace(settings.Network.DHCPRangeStart)
+	}
+	if targetIP != "" {
+		ip := net.ParseIP(targetIP)
+		if ip != nil && ip.To4() != nil {
+			ip4 := ip.To4()
+			// If SubnetCIDR is empty or still the default 192.168.0.0/24 while gateway/DHCP is on another subnet
+			if settings.Network.SubnetCIDR == "" || (settings.Network.SubnetCIDR == "192.168.0.0/24" && (ip4[0] != 192 || ip4[1] != 168 || ip4[2] != 0)) {
+				settings.Network.SubnetCIDR = fmt.Sprintf("%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+			}
+		}
+	}
 }
 
 // TestDirectory verifies connectivity and search against an LDAP or AD directory.

@@ -29,6 +29,7 @@ interface SettingsViewProps {
   onBackToFleet?: () => void;
   activeTab?: 'auth' | 'network' | 'storage' | 'templates';
   onTabChange?: (tab: 'auth' | 'network' | 'storage' | 'templates') => void;
+  onSettingsSaved?: (newSettings: SystemSettings) => void;
 }
 
 const defaultLocalSettings: SystemSettings = {
@@ -85,7 +86,12 @@ const defaultLocalSettings: SystemSettings = {
   updatedAt: new Date().toISOString(),
 };
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalTab, onTabChange }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ 
+  activeTab: externalTab, 
+  onTabChange,
+  onBackToFleet,
+  onSettingsSaved
+}) => {
   const [internalTab, setInternalTab] = useState<'auth' | 'network' | 'storage' | 'templates'>('auth');
   const activeTab = externalTab || internalTab;
   const setActiveTab = (tab: 'auth' | 'network' | 'storage' | 'templates') => {
@@ -438,6 +444,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
       if (res.ok) {
         setSaveSuccess(true);
         setSaveError(null);
+        if (onSettingsSaved) {
+          onSettingsSaved(updated);
+        }
         setTimeout(() => setSaveSuccess(false), 4000);
       } else {
         const errData = await res.json().catch(() => ({ error: 'Failed saving configuration' }));
@@ -495,6 +504,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
       {/* Title & Save Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[#212836] gap-3">
         <div className="flex items-center gap-2.5">
+          {onBackToFleet && (
+            <button
+              type="button"
+              onClick={onBackToFleet}
+              className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-[#151b24] border border-[#212836] mr-1 transition-colors"
+            >
+              ← Back
+            </button>
+          )}
           <h2 className="text-base font-bold text-white">
             Settings
           </h2>
@@ -1706,16 +1724,64 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
             </div>
 
             <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Subnet CIDR (e.g. 192.168.50.0/24)
+              </label>
+              <input
+                type="text"
+                value={settings.network.subnetCidr}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    network: { ...settings.network, subnetCidr: e.target.value },
+                  })
+                }
+                className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Default Gateway</label>
+              <input
+                type="text"
+                value={settings.network.gateway}
+                onChange={(e) => {
+                  const gw = e.target.value;
+                  const parts = gw.trim().split('.');
+                  let newSubnet = settings.network.subnetCidr;
+                  if (parts.length === 4 && parts.slice(0, 3).every((p) => p !== '' && !isNaN(Number(p)) && Number(p) >= 0 && Number(p) <= 255)) {
+                    if (settings.network.subnetCidr === '192.168.0.0/24' || !settings.network.subnetCidr) {
+                      newSubnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+                    }
+                  }
+                  setSettings({
+                    ...settings,
+                    network: { ...settings.network, gateway: gw, subnetCidr: newSubnet },
+                  });
+                }}
+                className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
+              />
+            </div>
+
+            <div>
               <label className="block text-xs font-medium text-slate-300 mb-1">DHCP Range Start</label>
               <input
                 type="text"
                 value={settings.network.dhcpRangeStart}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const parts = val.trim().split('.');
+                  let newSubnet = settings.network.subnetCidr;
+                  if (parts.length === 4 && parts.slice(0, 3).every((p) => p !== '' && !isNaN(Number(p)) && Number(p) >= 0 && Number(p) <= 255)) {
+                    if (settings.network.subnetCidr === '192.168.0.0/24' || !settings.network.subnetCidr) {
+                      newSubnet = `${parts[0]}.${parts[1]}.${parts[2]}.0/24`;
+                    }
+                  }
                   setSettings({
                     ...settings,
-                    network: { ...settings.network, dhcpRangeStart: e.target.value },
-                  })
-                }
+                    network: { ...settings.network, dhcpRangeStart: val, subnetCidr: newSubnet },
+                  });
+                }}
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
               />
             </div>
@@ -1729,21 +1795,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ activeTab: externalT
                   setSettings({
                     ...settings,
                     network: { ...settings.network, dhcpRangeEnd: e.target.value },
-                  })
-                }
-                className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Default Gateway</label>
-              <input
-                type="text"
-                value={settings.network.gateway}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    network: { ...settings.network, gateway: e.target.value },
                   })
                 }
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-red-600"
