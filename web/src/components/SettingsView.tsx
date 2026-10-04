@@ -1856,8 +1856,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <option value="AlmaLinux 9">AlmaLinux 9 (Recommended - Current Enterprise)</option>
                 <option value="AlmaLinux 8">AlmaLinux 8 (Legacy Enterprise)</option>
                 <option value="Debian 12">Debian 12 (Bookworm LTS)</option>
-                <option value="AlmaLinux 10">AlmaLinux 10 (Preview)</option>
-                <option value="Debian 13">Debian 13 (Trixie Preview)</option>
+                <option value="AlmaLinux 10">AlmaLinux 10 (Enterprise LTS)</option>
+                <option value="Debian 13">Debian 13 (Trixie LTS)</option>
               </select>
             </div>
           </div>
@@ -1961,23 +1961,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           )}
                         </td>
                         <td className="py-2.5 px-3 text-right">
-                          {img.downloadUrl ? (
-                            <button
-                              type="button"
-                              disabled={isDownloading}
-                              onClick={() => handleDownloadImage(img.os)}
-                              className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors inline-flex items-center gap-1 ${
-                                img.present
-                                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
-                                  : 'bg-red-700 hover:bg-red-600 text-white'
-                              } disabled:opacity-50`}
-                            >
-                              <Download className="h-3 w-3" />
-                              <span>{img.present ? 'Re-cache' : 'Download'}</span>
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-500 italic">Custom Mirror Required</span>
-                          )}
+                          <button
+                            type="button"
+                            disabled={isDownloading}
+                            onClick={() => handleDownloadImage(img.os)}
+                            className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors inline-flex items-center gap-1 ${
+                              img.present
+                                ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                                : 'bg-red-700 hover:bg-red-600 text-white'
+                            } disabled:opacity-50`}
+                          >
+                            <Download className="h-3 w-3" />
+                            <span>{img.present ? 'Re-cache' : 'Download'}</span>
+                          </button>
                         </td>
                       </tr>
                     );

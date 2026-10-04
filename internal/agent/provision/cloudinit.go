@@ -45,29 +45,22 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		_ = exec.CommandContext(umountCtx, "umount", mountPoint).Run()
 	}()
 
-	// Step 3: Create NoCloud seed directory
-	seedDir := filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud")
-	if err := os.MkdirAll(seedDir, 0755); err != nil {
-		return fmt.Errorf("failed creating seed directory %s: %w", seedDir, err)
+	// Step 2.1: Online expand root filesystem to use the full partition capacity
+	slog.InfoContext(ctx, "auto-expanding root filesystem to full partition capacity", "partition", rootPart, "mountpoint", mountPoint)
+	xfsGrowCmd := exec.CommandContext(ctx, "xfs_growfs", mountPoint)
+	if out, err := xfsGrowCmd.CombinedOutput(); err == nil {
+		slog.InfoContext(ctx, "xfs root filesystem expanded successfully", "partition", rootPart, "output", strings.TrimSpace(string(out)))
+	} else {
+		// If not XFS, attempt online ext4 resize
+		resizeCmd := exec.CommandContext(ctx, "resize2fs", rootPart)
+		if rOut, rErr := resizeCmd.CombinedOutput(); rErr == nil {
+			slog.InfoContext(ctx, "ext4 root filesystem expanded successfully", "partition", rootPart, "output", strings.TrimSpace(string(rOut)))
+		}
 	}
 
-	// Step 4: Generate meta-data
-	hostname := fmt.Sprintf("node-%s", strings.ToLower(strings.ReplaceAll(bootMAC, ":", "")))
-	metaDataContent := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", cfg.NodeID, hostname)
-	if err := os.WriteFile(filepath.Join(seedDir, "meta-data"), []byte(metaDataContent), 0644); err != nil {
-		return fmt.Errorf("failed writing meta-data: %w", err)
-	}
-
-	// Step 5: Generate user-data
-	userDataContent := generateUserData(cfg)
-	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userDataContent), 0644); err != nil {
-		return fmt.Errorf("failed writing user-data: %w", err)
-	}
-
-	// Step 6: Generate network-config (Universal MAC matching)
-	networkConfigContent := generateNetworkConfig(cfg, bootMAC)
-	if err := os.WriteFile(filepath.Join(seedDir, "network-config"), []byte(networkConfigContent), 0644); err != nil {
-		return fmt.Errorf("failed writing network-config: %w", err)
+	// Step 3: Write NoCloud seeds (meta-data, user-data, network-config)
+	if err := WriteNoCloudSeeds(mountPoint, cfg, bootMAC); err != nil {
+		return fmt.Errorf("failed injecting NoCloud seeds: %w", err)
 	}
 
 	// Step 7: Inject mdadm.conf if Software RAID is configured
@@ -77,11 +70,38 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		}
 	}
 
+	seedDir := filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud")
 	slog.InfoContext(ctx, "cloud-init nocloud seed injected successfully",
 		"partition", rootPart,
 		"seed_dir", seedDir,
 		"boot_mac", bootMAC,
 	)
+
+	return nil
+}
+
+// WriteNoCloudSeeds generates and writes instance meta-data, user-data, and network-config into the target rootfs.
+func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC string) error {
+	seedDir := filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud")
+	if err := os.MkdirAll(seedDir, 0755); err != nil {
+		return fmt.Errorf("failed creating seed directory %s: %w", seedDir, err)
+	}
+
+	hostname := fmt.Sprintf("node-%s", strings.ToLower(strings.ReplaceAll(bootMAC, ":", "")))
+	metaDataContent := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", cfg.NodeID, hostname)
+	if err := os.WriteFile(filepath.Join(seedDir, "meta-data"), []byte(metaDataContent), 0644); err != nil {
+		return fmt.Errorf("failed writing meta-data: %w", err)
+	}
+
+	userDataContent := generateUserData(cfg)
+	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userDataContent), 0644); err != nil {
+		return fmt.Errorf("failed writing user-data: %w", err)
+	}
+
+	networkConfigContent := generateNetworkConfig(cfg, bootMAC)
+	if err := os.WriteFile(filepath.Join(seedDir, "network-config"), []byte(networkConfigContent), 0644); err != nil {
+		return fmt.Errorf("failed writing network-config: %w", err)
+	}
 
 	return nil
 }
@@ -206,13 +226,15 @@ func generateNetworkConfig(cfg domain.DeploymentConfig, bootMAC string) string {
 }
 
 type partInfo struct {
-	Name     string      `json:"name"`
-	Path     string      `json:"path"`
-	Size     json.Number `json:"size"`
-	Type     string      `json:"type"`
-	FSType   string      `json:"fstype"`
-	Label    string      `json:"label"`
-	Children []partInfo  `json:"children,omitempty"`
+	Name      string      `json:"name"`
+	Path      string      `json:"path"`
+	Size      json.Number `json:"size"`
+	Type      string      `json:"type"`
+	FSType    string      `json:"fstype"`
+	Label     string      `json:"label"`
+	PartLabel string      `json:"partlabel"`
+	PartNum   json.Number `json:"partnum"`
+	Children  []partInfo  `json:"children,omitempty"`
 }
 
 type partList struct {
@@ -222,11 +244,19 @@ type partList struct {
 func collectPartitions(devices []partInfo) []partInfo {
 	var parts []partInfo
 	for _, d := range devices {
-		if d.Type == "part" {
-			parts = append(parts, d)
+		dev := d
+		if dev.Path == "" {
+			if strings.HasPrefix(dev.Name, "/") {
+				dev.Path = dev.Name
+			} else {
+				dev.Path = "/dev/" + dev.Name
+			}
 		}
-		if len(d.Children) > 0 {
-			parts = append(parts, collectPartitions(d.Children)...)
+		if dev.Type == "part" {
+			parts = append(parts, dev)
+		}
+		if len(dev.Children) > 0 {
+			parts = append(parts, collectPartitions(dev.Children)...)
 		}
 	}
 	return parts
@@ -238,7 +268,7 @@ func findRootPartition(ctx context.Context, targetDrivePath string) (string, err
 		realDev = targetDrivePath
 	}
 
-	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL", realDev)
+	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,PARTNUM", realDev)
 	out, err := cmd.Output()
 	if err != nil {
 		return fallbackPartitionPath(realDev), nil
@@ -262,9 +292,9 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return "", fmt.Errorf("no partitions detected")
 	}
 
-	// 1. Look for explicit root label
+	// 1. Look for explicit root in PARTLABEL or LABEL (e.g. AlmaLinux PARTLABEL="root")
 	for _, p := range parts {
-		if strings.Contains(strings.ToLower(p.Label), "root") {
+		if strings.Contains(strings.ToLower(p.PartLabel), "root") || strings.Contains(strings.ToLower(p.Label), "root") {
 			return p.Path, nil
 		}
 	}
@@ -285,7 +315,7 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return candidate, nil
 	}
 
-	// 3. Fallback to the largest partition
+	// 3. Fallback to the largest partition overall
 	for _, p := range parts {
 		size, _ := p.Size.Int64()
 		if size > largestSize {
@@ -297,12 +327,20 @@ func findRootPartitionFromJSON(out []byte, realDev string) (string, error) {
 		return candidate, nil
 	}
 
-	return "", fmt.Errorf("could not identify root partition")
+	return fallbackPartitionPath(realDev), nil
 }
 
 func fallbackPartitionPath(realDev string) string {
-	if len(realDev) > 0 && realDev[len(realDev)-1] >= '0' && realDev[len(realDev)-1] <= '9' {
-		return realDev + "p3"
+	// Standard enterprise cloud images: partition 4 for AlmaLinux/RHEL (partition 1=biosboot, 2=ESP, 3=boot, 4=root)
+	// Or partition 1 for Debian (partition 1=root, 15=ESP).
+	part4 := resolvePartitionPath(realDev, 4)
+	if _, err := os.Stat(part4); err == nil {
+		return part4
 	}
-	return realDev + "3"
+	part1 := resolvePartitionPath(realDev, 1)
+	if _, err := os.Stat(part1); err == nil {
+		return part1
+	}
+	return resolvePartitionPath(realDev, 4)
 }
+

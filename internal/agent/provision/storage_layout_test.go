@@ -55,3 +55,15 @@ func TestSetupStorageArchitecture_Standard(t *testing.T) {
 		t.Errorf("expected ESPDrives ['/dev/sda'], got %v", res.ESPDrives)
 	}
 }
+
+func TestInjectMDADMConfig_Paths(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	// Call InjectMDADMConfig (mdadm might not have arrays in test environment, but directories and files are exercised)
+	err := InjectMDADMConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error injecting mdadm config: %v", err)
+	}
+}
+

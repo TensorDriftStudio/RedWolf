@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import type { ServerNode, DeploymentConfig, OperatingSystem, CloudInitTemplate, RAIDLevel, LVMVolume } from '../types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import type { ServerNode, DeploymentConfig, OperatingSystem, CloudInitTemplate, RAIDLevel, LVMVolume, OSImageInfo } from '../types';
 import { getAuthHeaders } from '../utils/auth';
 import { VendorBadge } from './Badges';
 import { 
@@ -26,13 +26,60 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
       ? [node.storage[0]?.byId || node.storage[0]?.path, node.storage[1]?.byId || node.storage[1]?.path]
       : [node.storage[0]?.byId || node.storage[0]?.path || '/dev/nvme0n1']
   );
+  const targetDiskObj = useMemo(() => {
+    return node.storage?.find((d) => (d.byId && d.byId === targetDrive) || d.path === targetDrive) || node.storage?.[0] || null;
+  }, [node.storage, targetDrive]);
+
+  const targetDiskSizeGb = useMemo(() => {
+    if (!targetDiskObj?.sizeBytes) return 20;
+    return Math.max(10, Math.floor(targetDiskObj.sizeBytes / (1024 * 1024 * 1024)));
+  }, [targetDiskObj]);
+
+  const getDefaultLVM = useCallback((totalGb: number): { vols: LVMVolume[]; swap: number } => {
+    if (totalGb <= 32) {
+      const rootSz = Math.max(6, Math.floor(totalGb * 0.45));
+      const varSz = Math.max(3, Math.floor(totalGb * 0.25));
+      const homeSz = Math.max(2, Math.floor(totalGb * 0.15));
+      return {
+        vols: [
+          { name: 'root', mountPoint: '/', sizeGb: rootSz, fsType: 'xfs' },
+          { name: 'var', mountPoint: '/var', sizeGb: varSz, fsType: 'xfs' },
+          { name: 'home', mountPoint: '/home', sizeGb: homeSz, fsType: 'xfs' },
+        ],
+        swap: 2,
+      };
+    }
+    if (totalGb <= 120) {
+      return {
+        vols: [
+          { name: 'root', mountPoint: '/', sizeGb: 30, fsType: 'xfs' },
+          { name: 'var', mountPoint: '/var', sizeGb: 40, fsType: 'xfs' },
+          { name: 'home', mountPoint: '/home', sizeGb: 20, fsType: 'xfs' },
+        ],
+        swap: 4,
+      };
+    }
+    return {
+      vols: [
+        { name: 'root', mountPoint: '/', sizeGb: 50, fsType: 'xfs' },
+        { name: 'var', mountPoint: '/var', sizeGb: 100, fsType: 'xfs' },
+        { name: 'home', mountPoint: '/home', sizeGb: 50, fsType: 'xfs' },
+      ],
+      swap: 8,
+    };
+  }, []);
+
   const [partitioning, setPartitioning] = useState<'standard' | 'lvm'>('standard');
-  const [lvmVolumes, setLvmVolumes] = useState<LVMVolume[]>([
-    { name: 'root', mountPoint: '/', sizeGb: 50, fsType: 'xfs' },
-    { name: 'var', mountPoint: '/var', sizeGb: 100, fsType: 'xfs' },
-    { name: 'home', mountPoint: '/home', sizeGb: 50, fsType: 'xfs' },
-  ]);
-  const [swapSizeGb, setSwapSizeGb] = useState<number>(8);
+  const [lvmVolumes, setLvmVolumes] = useState<LVMVolume[]>(() => {
+    const rawBytes = node.storage?.[0]?.sizeBytes || 0;
+    const gb = rawBytes > 0 ? Math.floor(rawBytes / (1024 * 1024 * 1024)) : 20;
+    return getDefaultLVM(gb).vols;
+  });
+  const [swapSizeGb, setSwapSizeGb] = useState<number>(() => {
+    const rawBytes = node.storage?.[0]?.sizeBytes || 0;
+    const gb = rawBytes > 0 ? Math.floor(rawBytes / (1024 * 1024 * 1024)) : 20;
+    return getDefaultLVM(gb).swap;
+  });
   const [networkMode, setNetworkMode] = useState<'static' | 'dhcp'>('static');
   const [staticIp, setStaticIp] = useState('10.10.100.25');
   const [gateway, setGateway] = useState('10.10.100.1');
@@ -41,6 +88,10 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   const [rootPassword, setRootPassword] = useState('RedWolf#2026!');
   const [sshKey, setSshKey] = useState('');
 
+  // OS Distribution Images State
+  const [images, setImages] = useState<OSImageInfo[]>([]);
+  const [isLoadingImages, setIsLoadingImages] = useState<boolean>(true);
+
   // Cloud-Init Templates State
   const [templates, setTemplates] = useState<CloudInitTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('tpl-base-minimal');
@@ -48,6 +99,7 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   const [showCustomYaml, setShowCustomYaml] = useState<boolean>(false);
 
   useEffect(() => {
+    // 1. Fetch Cloud-Init Templates
     fetch('/api/templates', {
       headers: { ...getAuthHeaders() },
     })
@@ -61,6 +113,27 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
         }
       })
       .catch(() => {});
+
+    // 2. Fetch OS Distribution Image Cache Status
+    fetch('/api/images', {
+      headers: { ...getAuthHeaders() },
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: OSImageInfo[]) => {
+        if (Array.isArray(data)) {
+          setImages(data);
+          // Auto-select first cached OS if current selection is not cached
+          const isCurrentCached = data.some((img) => img.os === selectedOS && img.present);
+          if (!isCurrentCached) {
+            const firstCached = data.find((img) => img.present);
+            if (firstCached) {
+              setSelectedOS(firstCached.os);
+            }
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsLoadingImages(false));
   }, []);
 
   const handleTemplateChange = (id: string) => {
@@ -114,6 +187,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
     },
   ];
 
+  const isSelectedOSCached = images.some((img) => img.os === selectedOS && img.present);
+
   const isStorageValid = () => {
     if (storageMode === 'raid1' && selectedDrives.length < 2) return false;
     if (storageMode === 'raid0' && selectedDrives.length < 2) return false;
@@ -131,10 +206,36 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
     });
   };
 
+  const totalAllocatedGb = useMemo(() => {
+    return lvmVolumes.reduce((acc, v) => acc + (v.sizeGb || 0), 0) + swapSizeGb;
+  }, [lvmVolumes, swapSizeGb]);
+
+  const isOverAllocated = totalAllocatedGb > targetDiskSizeGb;
+
+  const handleAutoFitLVM = () => {
+    const usableGb = Math.max(8, targetDiskSizeGb - 2);
+    const currentTotal = lvmVolumes.reduce((acc, v) => acc + (v.sizeGb || 0), 0) + swapSizeGb;
+    if (currentTotal <= 0) return;
+    const ratio = usableGb / currentTotal;
+    const newSwap = Math.max(1, Math.floor(swapSizeGb * ratio));
+    let remaining = usableGb - newSwap;
+    const newVols = lvmVolumes.map((vol, idx) => {
+      if (idx === lvmVolumes.length - 1) {
+        return { ...vol, sizeGb: Math.max(2, remaining) };
+      }
+      const sz = Math.max(1, Math.floor(vol.sizeGb * ratio));
+      remaining -= sz;
+      return { ...vol, sizeGb: sz };
+    });
+    setLvmVolumes(newVols);
+    setSwapSizeGb(newSwap);
+  };
+
   const addLvmVolume = () => {
+    const defaultSz = Math.max(1, Math.floor(targetDiskSizeGb * 0.15));
     setLvmVolumes((prev) => [
       ...prev,
-      { name: `vol_${prev.length + 1}`, mountPoint: `/mnt/data${prev.length + 1}`, sizeGb: 50, fsType: 'xfs' },
+      { name: `vol_${prev.length + 1}`, mountPoint: `/mnt/data${prev.length + 1}`, sizeGb: defaultSz, fsType: 'xfs' },
     ]);
   };
 
@@ -151,6 +252,10 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   };
 
   const handleStartDeployment = async () => {
+    if (!isSelectedOSCached) {
+      setDeployError(`The selected operating system (${selectedOS}) is not cached on the appliance. Please download it in Settings before provisioning.`);
+      return;
+    }
     setIsDeploying(true);
     setDeployError(null);
 
@@ -253,28 +358,84 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
           {/* STEP 1: OS Selection */}
           {step === 1 && !activeDeploy && (
             <div className="space-y-3">
-              <div className="text-xs font-medium text-slate-300">Select Operating System</div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {distros.map((distro) => (
-                  <div
-                    key={distro.id}
-                    onClick={() => setSelectedOS(distro.id)}
-                    className={`cursor-pointer rounded-sm border p-2.5 transition-colors ${
-                      selectedOS === distro.id
-                        ? 'border-redwolf-primary bg-[#181f2c]'
-                        : 'border-[#212836] bg-[#0f1218] hover:bg-[#151b24]'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-semibold text-white text-xs">{distro.name}</span>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {distro.kernel}
-                      </span>
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-slate-300">Select Operating System</div>
+                <span className="text-[11px] text-slate-500">
+                  Only locally pre-cached distribution images can be provisioned
+                </span>
               </div>
+
+              {isLoadingImages ? (
+                <div className="flex items-center justify-center p-8 text-slate-400 gap-2 font-mono text-xs">
+                  <Loader2 className="h-4 w-4 animate-spin text-red-500" />
+                  <span>Inspecting appliance image cache...</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {distros.map((distro) => {
+                    const imgInfo = images.find((img) => img.os === distro.id);
+                    const isCached = imgInfo?.present ?? false;
+                    const isSelected = selectedOS === distro.id && isCached;
+
+                    return (
+                      <div
+                        key={distro.id}
+                        onClick={() => {
+                          if (isCached) {
+                            setSelectedOS(distro.id);
+                          }
+                        }}
+                        className={`rounded-sm border p-2.5 transition-all ${
+                          !isCached
+                            ? 'border-slate-800/60 bg-[#0a0d14]/70 opacity-45 cursor-not-allowed select-none'
+                            : isSelected
+                            ? 'cursor-pointer border-redwolf-primary bg-[#181f2c] ring-1 ring-redwolf-primary/30 shadow-sm'
+                            : 'cursor-pointer border-[#212836] bg-[#0f1218] hover:bg-[#151b24] hover:border-slate-700'
+                        }`}
+                        title={!isCached ? 'Image not cached. Download in Settings to enable deployment.' : undefined}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className={`font-semibold text-xs ${isCached ? 'text-white' : 'text-slate-500'}`}>
+                              {distro.name}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                              {distro.kernel}
+                            </span>
+                          </div>
+                          <div>
+                            {isCached ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                                <Check className="h-2.5 w-2.5" />
+                                CACHED
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-mono text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                                NOT DOWNLOADED
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {!isCached && (
+                          <div className="mt-2 pt-1.5 border-t border-slate-800/40 text-[10px] text-slate-500 italic">
+                            Download required in Settings &rarr; Images
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!isLoadingImages && !images.some((img) => img.present) && (
+                <div className="p-3 rounded-sm bg-amber-950/30 border border-amber-800/40 text-amber-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />
+                  <span>
+                    No operating system images are currently cached. Go to <strong>Settings &rarr; OS Distribution Images</strong> to download an image before provisioning.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -547,6 +708,29 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                         <span className="text-slate-400 font-mono text-[10px]">GB</span>
                       </div>
                     </div>
+
+                    {/* LVM Capacity Allocation Bar & Auto-Fit */}
+                    <div className="flex items-center justify-between bg-[#131722] rounded-xs px-2.5 py-1.5 border border-[#1e2536] text-[11px]">
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-400">Total Allocated:</span>
+                        <span className={`font-mono font-medium ${isOverAllocated ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {totalAllocatedGb} GB / {targetDiskSizeGb} GB Available
+                        </span>
+                        {isOverAllocated && (
+                          <span className="text-[10px] text-amber-400 bg-amber-950/60 border border-amber-800/80 px-1.5 py-0.5 rounded-xs">
+                            Exceeds drive capacity
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAutoFitLVM}
+                        className="text-[10px] font-medium text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors cursor-pointer"
+                        title="Scale volumes proportionally to fit within disk capacity"
+                      >
+                        Auto-fit to Drive
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -711,7 +895,7 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                   <span>Partitioning &amp; Volumes:</span>
                   <span className="font-mono text-slate-200">
                     {partitioning === 'lvm'
-                      ? `LVM (vg_system, ${lvmVolumes.length} LVs, ${swapSizeGb}GB Swap)`
+                      ? `LVM (vg_system: ${lvmVolumes.map(v => `${v.name}=${v.sizeGb}GB`).join(', ')}, ${swapSizeGb}GB Swap)`
                       : 'Standard GPT (EFI + Root auto-expanded)'}
                   </span>
                 </div>
@@ -799,7 +983,10 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
             {step < 4 ? (
               <button
                 onClick={() => setStep((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 4))}
-                disabled={step === 2 && !isStorageValid()}
+                disabled={
+                  (step === 1 && (!isSelectedOSCached || isLoadingImages)) ||
+                  (step === 2 && !isStorageValid())
+                }
                 className="flex items-center gap-1 rounded-sm bg-[#182638] border border-[#283f5e] hover:bg-[#20324a] px-3 py-1 text-xs font-medium text-sky-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Next

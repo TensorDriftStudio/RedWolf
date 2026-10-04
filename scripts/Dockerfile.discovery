@@ -29,6 +29,7 @@ RUN apk update && apk add --no-cache \
     ipmitool \
     gptfdisk \
     parted \
+    dosfstools \
     efibootmgr \
     pciutils \
     usbutils \

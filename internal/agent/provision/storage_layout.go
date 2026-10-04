@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +18,17 @@ import (
 type StorageLayoutResult struct {
 	TargetDrive    string   // Primary block device to stream raw image into (e.g. /dev/md0 or /dev/nvme0n1)
 	ESPDrives      []string // Partitions or disks where the UEFI bootloader must be registered
+	MemberESPs     []string // Partition paths of RAID member ESPs (e.g. /dev/sda1, /dev/sdb1)
 	IsSoftwareRAID bool
 	IsLVM          bool
 	RAIDDevice     string
 	LVMVolumeGroup string
 	RootPartition  string
+	BootPartition  string
+	ESPPartition   string
+	LVMVolumes     []domain.LVMVolumeConfig
+	SwapDevice     string
+	TargetDisk     string
 }
 
 // SetupStorageArchitecture provisions disks according to standard, software RAID, or LVM configurations.
@@ -57,12 +64,14 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 
 		var espPartitions []string
 		var raidMemberPartitions []string
+		var memberDisks []string
 
 		for _, disk := range drives {
 			realDisk, err := filepath.EvalSymlinks(disk)
 			if err != nil {
 				realDisk = disk
 			}
+			memberDisks = append(memberDisks, realDisk)
 
 			// Pre-wipe disk signatures and zero disk boundaries
 			if err := WipeTargetDisk(ctx, realDisk); err != nil {
@@ -89,6 +98,9 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 			espPart := resolvePartitionPath(realDisk, 1)
 			raidPart := resolvePartitionPath(realDisk, 2)
 
+			// Format independent member ESP with FAT32
+			_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
+
 			espPartitions = append(espPartitions, espPart)
 			raidMemberPartitions = append(raidMemberPartitions, raidPart)
 		}
@@ -112,6 +124,7 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 				TargetDrive:    drives[0],
 				ESPDrives:      drives,
 				IsSoftwareRAID: false,
+				TargetDisk:     drives[0],
 			}, nil
 		}
 
@@ -127,31 +140,198 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 
 		return &StorageLayoutResult{
 			TargetDrive:    mdDevice,
-			ESPDrives:      espPartitions,
+			ESPDrives:      memberDisks,
+			MemberESPs:     espPartitions,
 			IsSoftwareRAID: true,
 			RAIDDevice:     mdDevice,
+			TargetDisk:     memberDisks[0],
 		}, nil
 	}
 
-	// 2. Standard Single-Disk Layout
+	// 2. Storage Setup (LVM or Standard Single-Disk)
 	primaryDrive := cfg.TargetDrivePath
 	if primaryDrive == "" && len(drives) > 0 {
 		primaryDrive = drives[0]
 	}
 
 	isLVM := cfg.Storage.LayoutMode == domain.PartitioningLVM || cfg.PartitioningPreset == domain.PartitioningLVM
+	if isLVM {
+		return setupLVMStorage(ctx, primaryDrive, cfg)
+	}
 
 	slog.InfoContext(ctx, "configuring standard block storage target",
 		"target_drive", primaryDrive,
-		"is_lvm", isLVM,
+		"is_lvm", false,
 	)
 
 	return &StorageLayoutResult{
 		TargetDrive:    primaryDrive,
 		ESPDrives:      []string{primaryDrive},
 		IsSoftwareRAID: false,
-		IsLVM:          isLVM,
+		IsLVM:          false,
+		TargetDisk:     primaryDrive,
+	}, nil
+}
+
+// setupLVMStorage partitions the physical disk with ESP, /boot, and an LVM physical volume,
+// creates the volume group 'vg_system', and configures requested logical volumes and swap.
+func setupLVMStorage(ctx context.Context, targetDrive string, cfg domain.DeploymentConfig) (*StorageLayoutResult, error) {
+	realDisk, err := filepath.EvalSymlinks(targetDrive)
+	if err != nil {
+		realDisk = targetDrive
+	}
+
+	slog.InfoContext(ctx, "initializing LVM volume group storage architecture",
+		"target_drive", targetDrive,
+		"real_disk", realDisk,
+		"preset", cfg.PartitioningPreset,
+	)
+
+	// Step 1: Deactivate and remove old volume groups/PVs if present
+	_ = exec.CommandContext(ctx, "vgchange", "-an", "vg_system").Run()
+	_ = exec.CommandContext(ctx, "vgremove", "-y", "-f", "vg_system").Run()
+	if err := WipeTargetDisk(ctx, realDisk); err != nil {
+		slog.WarnContext(ctx, "pre-wipe warning on LVM target drive", "drive", realDisk, "error", err)
+	}
+
+	// Step 2: Create GPT layout:
+	// Part 1: ESP (512M) - ef00
+	// Part 2: /boot (1024M) - 8300
+	// Part 3: LVM PV (remainder) - 8e00
+	zapCmd := exec.CommandContext(ctx, "sgdisk", "-Z", realDisk)
+	_ = zapCmd.Run()
+
+	partCmd := exec.CommandContext(ctx, "sgdisk",
+		"-n", "1:2048:+512M", "-t", "1:ef00", "-c", "1:EFI System Partition",
+		"-n", "2:0:+1024M", "-t", "2:8300", "-c", "2:boot",
+		"-n", "3:0:0", "-t", "3:8e00", "-c", "3:Linux LVM",
+		realDisk,
+	)
+	if out, err := partCmd.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "sgdisk partition warning on lvm drive", "drive", realDisk, "error", err, "output", string(out))
+	}
+
+	_ = exec.CommandContext(ctx, "partprobe", realDisk).Run()
+	_ = exec.CommandContext(ctx, "blockdev", "--rereadpt", realDisk).Run()
+	time.Sleep(1 * time.Second)
+
+	espPart := resolvePartitionPath(realDisk, 1)
+	bootPart := resolvePartitionPath(realDisk, 2)
+	lvmPart := resolvePartitionPath(realDisk, 3)
+
+	// Step 3: Initialize Physical Volume and Volume Group
+	pvCmd := exec.CommandContext(ctx, "pvcreate", "-ff", "-y", lvmPart)
+	if out, err := pvCmd.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "pvcreate warning/error", "error", err, "output", string(out))
+	}
+
+	vgCmd := exec.CommandContext(ctx, "vgcreate", "-y", "vg_system", lvmPart)
+	if out, err := vgCmd.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "vgcreate returned error; retrying with forced options", "error", err, "output", string(out))
+		_ = exec.CommandContext(ctx, "vgcreate", "-y", "-ff", "vg_system", lvmPart).Run()
+	}
+
+	// Step 4: Format ESP and Boot partitions
+	_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
+	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
+		_ = exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).Run()
+	} else {
+		_ = exec.CommandContext(ctx, "mkfs.xfs", "-f", bootPart).Run()
+	}
+
+	// Step 5: Determine and scale Logical Volumes
+	vols := cfg.Storage.LVMVolumes
+	if len(vols) == 0 {
+		vols = []domain.LVMVolumeConfig{
+			{Name: "root", MountPoint: "/", SizeGB: 10, FSType: "xfs"},
+		}
+	}
+
+	// Query VG free capacity
+	var freeGB int = 15 // Fallback estimate
+	vgsCmd := exec.CommandContext(ctx, "vgs", "--noheadings", "--nosuffix", "--units", "g", "-o", "vg_free", "vg_system")
+	if out, err := vgsCmd.Output(); err == nil {
+		str := strings.TrimSpace(string(out))
+		if idx := strings.Index(str, "."); idx > 0 {
+			str = str[:idx]
+		}
+		if val, err := strconv.Atoi(str); err == nil && val > 0 {
+			freeGB = val
+		}
+	}
+
+	swapGB := cfg.Storage.SwapSizeGB
+	totalReq := swapGB
+	for _, v := range vols {
+		totalReq += v.SizeGB
+	}
+
+	// If requested total exceeds available free capacity, scale proportionally
+	scale := 1.0
+	if totalReq > freeGB && freeGB > 3 {
+		scale = float64(freeGB-1) / float64(totalReq)
+	}
+
+	// Create Swap LV
+	var swapDev string
+	if swapGB > 0 {
+		scaledSwap := int(float64(swapGB) * scale)
+		if scaledSwap < 1 {
+			scaledSwap = 1
+		}
+		lvSwapCmd := exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", scaledSwap), "-n", "swap", "vg_system")
+		if out, err := lvSwapCmd.CombinedOutput(); err == nil {
+			swapDev = "/dev/vg_system/swap"
+			_ = exec.CommandContext(ctx, "mkswap", "-f", swapDev).Run()
+		} else {
+			slog.WarnContext(ctx, "swap lvcreate error", "error", err, "output", string(out))
+		}
+	}
+
+	// Create Data/Root Logical Volumes
+	for i, vol := range vols {
+		isLast := (i == len(vols)-1)
+		scaledSize := int(float64(vol.SizeGB) * scale)
+		if scaledSize < 1 {
+			scaledSize = 1
+		}
+
+		var lvCreate *exec.Cmd
+		if isLast {
+			// Try 100%FREE for the last volume to utilize remainder, or fallback to fixed size
+			lvCreate = exec.CommandContext(ctx, "lvcreate", "-y", "-l", "+100%FREE", "-n", vol.Name, "vg_system")
+		} else {
+			lvCreate = exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", scaledSize), "-n", vol.Name, "vg_system")
+		}
+
+		if out, err := lvCreate.CombinedOutput(); err != nil {
+			// If percentage or sizing failed, fallback to 2G fixed
+			_ = exec.CommandContext(ctx, "lvcreate", "-y", "-L", "2G", "-n", vol.Name, "vg_system").Run()
+			slog.WarnContext(ctx, "lvcreate warning", "volume", vol.Name, "output", string(out))
+		}
+
+		lvDev := fmt.Sprintf("/dev/vg_system/%s", vol.Name)
+		if vol.FSType == "ext4" {
+			_ = exec.CommandContext(ctx, "mkfs.ext4", "-F", lvDev).Run()
+		} else {
+			_ = exec.CommandContext(ctx, "mkfs.xfs", "-f", lvDev).Run()
+		}
+	}
+
+	_ = exec.CommandContext(ctx, "vgchange", "-ay", "vg_system").Run()
+
+	return &StorageLayoutResult{
+		TargetDrive:    "/dev/vg_system/root",
+		ESPDrives:      []string{espPart},
+		IsSoftwareRAID: false,
+		IsLVM:          true,
 		LVMVolumeGroup: "vg_system",
+		RootPartition:  "/dev/vg_system/root",
+		BootPartition:  bootPart,
+		ESPPartition:   espPart,
+		LVMVolumes:     vols,
+		SwapDevice:     swapDev,
+		TargetDisk:     realDisk,
 	}, nil
 }
 
@@ -167,25 +347,36 @@ func resolvePartitionPath(diskPath string, partNum int) string {
 }
 
 // InjectMDADMConfig writes the active RAID configuration to the target mounted rootfs.
+// It populates both /etc/mdadm.conf (RHEL/AlmaLinux standard) and /etc/mdadm/mdadm.conf (Debian standard).
 func InjectMDADMConfig(ctx context.Context, mountPoint string) error {
-	mdadmConfDir := filepath.Join(mountPoint, "etc")
-	if err := os.MkdirAll(mdadmConfDir, 0755); err != nil {
-		return err
-	}
-
-	confFile := filepath.Join(mdadmConfDir, "mdadm.conf")
 	cmd := exec.CommandContext(ctx, "mdadm", "--detail", "--scan")
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
 		return nil
 	}
 
-	existing, _ := os.ReadFile(confFile)
-	var content strings.Builder
-	content.WriteString(string(existing))
-	content.WriteString("\n# Auto-generated by RedWolf Provisioning Engine\n")
-	content.WriteString(string(out))
-	content.WriteString("\n")
+	confDirs := []string{
+		filepath.Join(mountPoint, "etc"),
+		filepath.Join(mountPoint, "etc", "mdadm"),
+	}
+	confFiles := []string{
+		filepath.Join(mountPoint, "etc", "mdadm.conf"),
+		filepath.Join(mountPoint, "etc", "mdadm", "mdadm.conf"),
+	}
 
-	return os.WriteFile(confFile, []byte(content.String()), 0644)
+	for i, confFile := range confFiles {
+		if err := os.MkdirAll(confDirs[i], 0755); err != nil {
+			continue
+		}
+		existing, _ := os.ReadFile(confFile)
+		var content strings.Builder
+		content.WriteString(string(existing))
+		content.WriteString("\n# Auto-generated by RedWolf Provisioning Engine\n")
+		content.WriteString(string(out))
+		content.WriteString("\n")
+		_ = os.WriteFile(confFile, []byte(content.String()), 0644)
+	}
+
+	return nil
 }
+

@@ -49,33 +49,52 @@ var supportedTargets = []imageTarget{
 	{
 		os:          domain.OSAlmaLinux9,
 		displayName: "AlmaLinux 9 (Enterprise LTS)",
-		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "almalinux-9-genericcloud.raw", "almalinux-9-genericcloud.qcow2"},
+		candidates:  []string{"almalinux-9-genericcloud.raw.zstd", "almalinux-9-genericcloud.raw.zst", "almalinux-9-genericcloud.raw", "almalinux-9-genericcloud.qcow2"},
 		downloadURL: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSDebian12,
 		displayName: "Debian 12 Bookworm (Stable LTS)",
-		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw", "debian-12-genericcloud.raw"},
+		candidates:  []string{"debian-12-genericcloud.raw.zstd", "debian-12-genericcloud-amd64.raw", "debian-12-genericcloud.raw", "debian-12-genericcloud.raw.zst"},
 		downloadURL: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw",
 	},
 	{
 		os:          domain.OSAlmaLinux8,
 		displayName: "AlmaLinux 8 (Legacy Enterprise)",
-		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "almalinux-8-genericcloud.raw", "almalinux-8-genericcloud.qcow2"},
+		candidates:  []string{"almalinux-8-genericcloud.raw.zstd", "almalinux-8-genericcloud.raw.zst", "almalinux-8-genericcloud.raw", "almalinux-8-genericcloud.qcow2"},
 		downloadURL: "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSAlmaLinux10,
-		displayName: "AlmaLinux 10 (Technology Preview)",
-		candidates:  []string{"almalinux-10-genericcloud.raw.zstd", "almalinux-10-genericcloud.raw"},
-		downloadURL: "",
+		displayName: "AlmaLinux 10 (Enterprise LTS)",
+		candidates:  []string{"almalinux-10-genericcloud.raw.zstd", "almalinux-10-genericcloud.raw.zst", "almalinux-10-genericcloud.raw", "almalinux-10-genericcloud.qcow2"},
+		downloadURL: "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2",
 	},
 	{
 		os:          domain.OSDebian13,
-		displayName: "Debian 13 Trixie (Testing)",
-		candidates:  []string{"debian-13-genericcloud.raw.zstd", "debian-13-genericcloud.raw"},
-		downloadURL: "",
+		displayName: "Debian 13 Trixie (Stable LTS)",
+		candidates:  []string{"debian-13-genericcloud.raw.zstd", "debian-13-genericcloud-amd64.raw", "debian-13-genericcloud.raw", "debian-13-genericcloud.raw.zst"},
+		downloadURL: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.raw",
 	},
+}
+
+// getOSSlug converts domain.OperatingSystem to a filesystem and URL friendly slug (e.g. "almalinux-9", "debian-12").
+func getOSSlug(osType domain.OperatingSystem) string {
+	switch osType {
+	case domain.OSAlmaLinux8:
+		return "almalinux-8"
+	case domain.OSAlmaLinux9:
+		return "almalinux-9"
+	case domain.OSAlmaLinux10:
+		return "almalinux-10"
+	case domain.OSDebian12:
+		return "debian-12"
+	case domain.OSDebian13:
+		return "debian-13"
+	default:
+		s := strings.ToLower(string(osType))
+		return strings.ReplaceAll(s, " ", "-")
+	}
 }
 
 // ImageCatalogService discovers and manages OS raw images available for streaming.
@@ -93,16 +112,47 @@ func NewImageCatalogService(imageDir string) *ImageCatalogService {
 	}
 }
 
+// SetImageDir updates the primary image storage directory.
+func (s *ImageCatalogService) SetImageDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.imageDir = dir
+}
+
+// resolveWritableImageDir checks candidate directories and returns the first writable directory.
+func (s *ImageCatalogService) resolveWritableImageDir() string {
+	s.mu.RLock()
+	primary := s.imageDir
+	s.mu.RUnlock()
+
+	candidates := []string{primary, "/var/lib/redwolf/images", "data/images"}
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0755); err == nil {
+			testFile := filepath.Join(dir, fmt.Sprintf(".write_test_%d", time.Now().UnixNano()))
+			if err := os.WriteFile(testFile, []byte("ok"), 0644); err == nil {
+				_ = os.Remove(testFile)
+				return dir
+			}
+		}
+	}
+	return "data/images"
+}
+
 // ListImages inspects the filesystem and returns the status of all supported OS images.
 func (s *ImageCatalogService) ListImages(ctx context.Context) ([]OSImageInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	searchDirs := []string{
-		s.imageDir,
-		"data/images",
-		"/var/lib/redwolf/images",
-		"/usr/share/redwolf/images",
+	var searchDirs []string
+	if s.imageDir != "" {
+		searchDirs = append(searchDirs, s.imageDir)
+	}
+	// Only include standard appliance fallbacks if imageDir is empty or matches standard paths
+	if s.imageDir == "" || s.imageDir == "/var/lib/redwolf/images" || s.imageDir == "data/images" {
+		searchDirs = append(searchDirs, "/var/lib/redwolf/images", "data/images", "/usr/share/redwolf/images")
 	}
 
 	var results []OSImageInfo
@@ -170,31 +220,28 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 		return nil, fmt.Errorf("no official cloud image repository configured for %s", osType)
 	}
 
-	// Check if already downloading
-	if current, exists := s.downloads[osType]; exists && current.Status == "downloading" {
+	// Check if already downloading or converting
+	if current, exists := s.downloads[osType]; exists && (current.Status == "downloading" || current.Status == "converting") {
 		return current, nil
 	}
 
-	destFilename := target.candidates[0]
+	slug := getOSSlug(osType)
+	targetDir := s.resolveWritableImageDir()
 	urlLower := strings.ToLower(target.downloadURL)
-	if strings.HasSuffix(urlLower, ".raw") {
-		for _, cand := range target.candidates {
-			if strings.HasSuffix(cand, ".raw") && !strings.HasSuffix(cand, ".raw.zstd") && !strings.HasSuffix(cand, ".raw.zst") {
-				destFilename = cand
-				break
-			}
-		}
-	} else if strings.HasSuffix(urlLower, ".qcow2") {
-		for _, cand := range target.candidates {
-			if strings.HasSuffix(cand, ".qcow2") {
-				destFilename = cand
-				break
-			}
-		}
+	isQcow2 := strings.HasSuffix(urlLower, ".qcow2")
+
+	var destFilename string
+	var tempFilename string
+	if isQcow2 {
+		destFilename = fmt.Sprintf("%s-genericcloud.raw.zstd", slug)
+		tempFilename = fmt.Sprintf("%s-genericcloud.upstream.qcow2.part", slug)
+	} else {
+		destFilename = filepath.Base(target.downloadURL)
+		tempFilename = destFilename + ".part"
 	}
 
-	destPath := filepath.Join(s.imageDir, destFilename)
-	partPath := destPath + ".part"
+	destPath := filepath.Join(targetDir, destFilename)
+	tempPath := filepath.Join(targetDir, tempFilename)
 
 	status := &DownloadStatus{
 		OS:         osType,
@@ -205,11 +252,11 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 	}
 	s.downloads[osType] = status
 
-	// Run download asynchronously in detached context
-	go func(targetURL, finalPath, tempPath string, dlStatus *DownloadStatus, targetOS domain.OperatingSystem) {
-		slog.Info("starting official cloud image background download", "os", targetOS, "url", targetURL, "destination", finalPath)
+	// Run download and conversion asynchronously in detached background goroutine
+	go func(targetURL, downloadTempPath, finalDestPath, destDir, imgSlug string, dlStatus *DownloadStatus, targetOS domain.OperatingSystem, qcowSource bool) {
+		slog.Info("starting official cloud image background download", "os", targetOS, "url", targetURL, "destination", finalDestPath)
 
-		if err := os.MkdirAll(filepath.Dir(finalPath), 0755); err != nil {
+		if err := os.MkdirAll(destDir, 0755); err != nil {
 			s.mu.Lock()
 			dlStatus.Status = "error"
 			dlStatus.Error = fmt.Sprintf("failed creating image directory: %v", err)
@@ -248,7 +295,7 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 		dlStatus.TotalBytes = resp.ContentLength
 		s.mu.Unlock()
 
-		outFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		outFile, err := os.OpenFile(downloadTempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			s.mu.Lock()
 			dlStatus.Status = "error"
@@ -267,7 +314,7 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 				_, writeErr := outFile.Write(buf[:n])
 				if writeErr != nil {
 					_ = outFile.Close()
-					_ = os.Remove(tempPath)
+					_ = os.Remove(downloadTempPath)
 					s.mu.Lock()
 					dlStatus.Status = "error"
 					dlStatus.Error = writeErr.Error()
@@ -280,7 +327,11 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 					s.mu.Lock()
 					dlStatus.CopiedBytes = copied
 					if dlStatus.TotalBytes > 0 {
-						dlStatus.Progress = int((copied * 100) / dlStatus.TotalBytes)
+						if qcowSource {
+							dlStatus.Progress = int((copied * 80) / dlStatus.TotalBytes)
+						} else {
+							dlStatus.Progress = int((copied * 100) / dlStatus.TotalBytes)
+						}
 					}
 					s.mu.Unlock()
 					lastLog = time.Now()
@@ -292,7 +343,7 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 					break
 				}
 				_ = outFile.Close()
-				_ = os.Remove(tempPath)
+				_ = os.Remove(downloadTempPath)
 				s.mu.Lock()
 				dlStatus.Status = "error"
 				dlStatus.Error = readErr.Error()
@@ -303,73 +354,93 @@ func (s *ImageCatalogService) DownloadImage(ctx context.Context, osType domain.O
 
 		_ = outFile.Close()
 
-		// If downloaded image is QCOW2 and destination is .raw or .raw.zstd, convert using qemu-img
-		if strings.HasSuffix(strings.ToLower(targetURL), ".qcow2") {
+		var finalFilename string
+		var finalSize int64
+
+		if qcowSource {
+			// Convert QCOW2 to raw sparse disk format
 			if qemuPath, err := exec.LookPath("qemu-img"); err == nil {
-				slog.Info("converting downloaded QCOW2 image to raw sparse disk format", "os", targetOS, "temp", tempPath)
+				slog.Info("converting downloaded QCOW2 image to raw sparse disk format", "os", targetOS, "temp", downloadTempPath)
 				s.mu.Lock()
 				dlStatus.Status = "converting"
-				dlStatus.Progress = 90
+				dlStatus.Progress = 85
 				s.mu.Unlock()
 
-				rawPath := filepath.Join(s.imageDir, fmt.Sprintf("%s-genericcloud.raw", targetOS))
-				cmd := exec.CommandContext(context.Background(), qemuPath, "convert", "-f", "qcow2", "-O", "raw", tempPath, rawPath)
+				rawFilename := fmt.Sprintf("%s-genericcloud.raw", imgSlug)
+				rawPath := filepath.Join(destDir, rawFilename)
+				cmd := exec.CommandContext(context.Background(), qemuPath, "convert", "-f", "qcow2", "-O", "raw", downloadTempPath, rawPath)
 				if out, err := cmd.CombinedOutput(); err != nil {
 					s.mu.Lock()
 					dlStatus.Status = "error"
 					dlStatus.Error = fmt.Sprintf("qemu-img conversion failed: %s (%v)", string(out), err)
 					s.mu.Unlock()
-					_ = os.Remove(tempPath)
+					_ = os.Remove(downloadTempPath)
 					return
 				}
-				_ = os.Remove(tempPath)
+				_ = os.Remove(downloadTempPath)
 
-				// Compress to zstd if final destination is .zstd or .zst
-				if strings.HasSuffix(finalPath, ".zstd") || strings.HasSuffix(finalPath, ".zst") {
-					if zstdPath, err := exec.LookPath("zstd"); err == nil {
-						slog.Info("compressing raw disk image with zstd", "os", targetOS, "raw", rawPath, "dest", finalPath)
-						zstdCmd := exec.CommandContext(context.Background(), zstdPath, "--rm", "-3", rawPath, "-o", finalPath)
-						if out, err := zstdCmd.CombinedOutput(); err != nil {
-							slog.Warn("zstd compression failed, keeping uncompressed raw image", "error", err, "output", string(out))
-							finalPath = rawPath
-						}
+				// Compress raw image with zstd if available
+				if zstdPath, err := exec.LookPath("zstd"); err == nil {
+					slog.Info("compressing raw disk image with zstd", "os", targetOS, "raw", rawPath)
+					s.mu.Lock()
+					dlStatus.Progress = 92
+					s.mu.Unlock()
+
+					zstdFilename := fmt.Sprintf("%s-genericcloud.raw.zstd", imgSlug)
+					zstdPathDest := filepath.Join(destDir, zstdFilename)
+					zstdCmd := exec.CommandContext(context.Background(), zstdPath, "--rm", "-3", rawPath, "-o", zstdPathDest)
+					if out, err := zstdCmd.CombinedOutput(); err != nil {
+						slog.Warn("zstd compression failed, keeping uncompressed raw image", "error", err, "output", string(out))
+						finalFilename = rawFilename
 					} else {
-						finalPath = rawPath
+						finalFilename = zstdFilename
 					}
 				} else {
-					finalPath = rawPath
+					finalFilename = rawFilename
 				}
 			} else {
-				// qemu-img not available, keep downloaded image as qcow2
-				qcowPath := filepath.Join(s.imageDir, fmt.Sprintf("%s-genericcloud.qcow2", targetOS))
-				if err := os.Rename(tempPath, qcowPath); err != nil {
+				// qemu-img not available, keep downloaded image as qcow2 with normalized lowercase filename
+				qcowFilename := fmt.Sprintf("%s-genericcloud.qcow2", imgSlug)
+				qcowPath := filepath.Join(destDir, qcowFilename)
+				if err := os.Rename(downloadTempPath, qcowPath); err != nil {
 					s.mu.Lock()
 					dlStatus.Status = "error"
 					dlStatus.Error = err.Error()
 					s.mu.Unlock()
 					return
 				}
-				finalPath = qcowPath
+				finalFilename = qcowFilename
 			}
 		} else {
-			// Rename temp part file to final image
-			if err := os.Rename(tempPath, finalPath); err != nil {
+			// Direct raw image (Debian 12 / Debian 13)
+			actualDest := filepath.Join(destDir, filepath.Base(targetURL))
+			if err := os.Rename(downloadTempPath, actualDest); err != nil {
 				s.mu.Lock()
 				dlStatus.Status = "error"
 				dlStatus.Error = err.Error()
 				s.mu.Unlock()
 				return
 			}
+			finalFilename = filepath.Base(targetURL)
+		}
+
+		finalFilePath := filepath.Join(destDir, finalFilename)
+		if fi, err := os.Stat(finalFilePath); err == nil {
+			finalSize = fi.Size()
+		} else {
+			finalSize = copied
 		}
 
 		s.mu.Lock()
 		dlStatus.Status = "completed"
 		dlStatus.Progress = 100
-		dlStatus.CopiedBytes = copied
+		dlStatus.Filename = finalFilename
+		dlStatus.CopiedBytes = finalSize
+		dlStatus.TotalBytes = finalSize
 		s.mu.Unlock()
 
-		slog.Info("completed cloud image download and caching", "os", targetOS, "size_bytes", copied, "path", finalPath)
-	}(target.downloadURL, destPath, partPath, status, osType)
+		slog.Info("completed cloud image download and caching", "os", targetOS, "filename", finalFilename, "size_bytes", finalSize, "path", finalFilePath)
+	}(target.downloadURL, tempPath, destPath, targetDir, slug, status, osType, isQcow2)
 
 	return status, nil
 }

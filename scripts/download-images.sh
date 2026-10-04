@@ -41,7 +41,7 @@ usage() {
     echo -e "Usage: $0 [options]"
     echo ""
     echo -e "Options:"
-    echo -e "  -o, --os DISTRO      Target distribution: all, almalinux9, almalinux8, debian12 (default: all)"
+    echo -e "  -o, --os DISTRO      Target distribution: all, almalinux9, almalinux8, almalinux10, debian12, debian13 (default: all)"
     echo -e "  -d, --dir PATH       Destination image cache directory (default: ${TARGET_DIR})"
     echo -e "  -c, --check          Only verify existing cached images without downloading"
     echo -e "  -h, --help           Show this help guide"
@@ -116,67 +116,84 @@ fetch_image() {
     echo -e "${GREEN}    ✓ Download complete! Verified local cache (${final_size})${NC}"
 }
 
-# Official generic cloud raw images (compressed with zstd or gzip)
+# Fetch and convert AlmaLinux GenericCloud QCOW2 to raw.zstd
+fetch_almalinux() {
+    local version="$1"
+    local slug="$2"
+    local qcow_url="$3"
+    local dest_zstd="${TARGET_DIR}/${slug}-genericcloud.raw.zstd"
+
+    echo -e "\n${BOLD}${BLUE}>>> Distribution: AlmaLinux ${version} (Converting official upstream .qcow2 to .raw.zstd)${NC}"
+    echo -e "    Target File:  ${CYAN}${dest_zstd}${NC}"
+    echo -e "    Upstream URL: ${qcow_url}"
+
+    if [ -f "${dest_zstd}" ]; then
+        echo -e "${GREEN}    ✓ Image already cached in local repository ($(du -h "${dest_zstd}" | cut -f1))${NC}"
+        return 0
+    fi
+
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+        echo -e "${YELLOW}    ✗ Image not present in local cache (check-only mode)${NC}"
+        return 0
+    fi
+
+    local qcow_file="${TARGET_DIR}/${slug}-genericcloud.qcow2"
+    local raw_file="${TARGET_DIR}/${slug}-genericcloud.raw"
+
+    echo -e "    Downloading upstream QCOW2 image..."
+    curl -L --fail --progress-bar -o "${qcow_file}" "${qcow_url}"
+
+    echo -e "    Converting QCOW2 to raw sparse disk image..."
+    if command -v qemu-img &>/dev/null; then
+        qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
+    else
+        echo -e "${YELLOW}    qemu-img not found; installing via dnf/apt...${NC}"
+        (command -v dnf &>/dev/null && sudo dnf install -y qemu-img) || \
+        (command -v apt-get &>/dev/null && sudo apt-get update && sudo apt-get install -y qemu-utils)
+        qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
+    fi
+
+    echo -e "    Compressing raw image with zstd..."
+    if ! command -v zstd &>/dev/null; then
+        (command -v dnf &>/dev/null && sudo dnf install -y zstd) || \
+        (command -v apt-get &>/dev/null && sudo apt-get install -y zstd)
+    fi
+    zstd --rm -3 "${raw_file}" -o "${dest_zstd}"
+    rm -f "${qcow_file}"
+    echo -e "${GREEN}    ✓ AlmaLinux ${version} ready: ${dest_zstd} ($(du -h "${dest_zstd}" | cut -f1))${NC}"
+}
+
 # Upstream mirrors: repo.almalinux.org, cloud.debian.org
 case "$SELECTED_OS" in
     almalinux9)
-        if curl -s -I --fail "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst" > /dev/null 2>&1; then
-            fetch_image "AlmaLinux 9" \
-                "almalinux-9-genericcloud.raw.zstd" \
-                "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst"
-        else
-            echo -e "\n${BOLD}${BLUE}>>> Distribution: AlmaLinux 9 (Converting official upstream .qcow2 to .raw.zstd)${NC}"
-            dest_zstd="${TARGET_DIR}/almalinux-9-genericcloud.raw.zstd"
-            if [ -f "${dest_zstd}" ]; then
-                echo -e "${GREEN}    ✓ Image already cached in local repository ($(du -h "${dest_zstd}" | cut -f1))${NC}"
-            else
-                qcow_file="${TARGET_DIR}/almalinux-9-genericcloud.qcow2"
-                raw_file="${TARGET_DIR}/almalinux-9-genericcloud.raw"
-                echo -e "    Downloading upstream QCOW2 image..."
-                curl -L --fail --progress-bar -o "${qcow_file}" \
-                    "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
-                echo -e "    Converting QCOW2 to raw sparse disk image..."
-                if command -v qemu-img &>/dev/null; then
-                    qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
-                else
-                    echo -e "${YELLOW}    qemu-img not found; installing via dnf/apt...${NC}"
-                    (command -v dnf &>/dev/null && sudo dnf install -y qemu-img) || \
-                    (command -v apt-get &>/dev/null && sudo apt-get update && sudo apt-get install -y qemu-utils)
-                    qemu-img convert -f qcow2 -O raw "${qcow_file}" "${raw_file}"
-                fi
-                echo -e "    Compressing raw image with zstd..."
-                if ! command -v zstd &>/dev/null; then
-                    (command -v dnf &>/dev/null && sudo dnf install -y zstd) || \
-                    (command -v apt-get &>/dev/null && sudo apt-get install -y zstd)
-                fi
-                zstd --rm -3 "${raw_file}" -o "${dest_zstd}"
-                rm -f "${qcow_file}"
-                echo -e "${GREEN}    ✓ AlmaLinux 9 ready: ${dest_zstd} ($(du -h "${dest_zstd}" | cut -f1))${NC}"
-            fi
-        fi
+        fetch_almalinux "9" "almalinux-9" "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
         ;;
     almalinux8)
-        fetch_image "AlmaLinux 8" \
-            "almalinux-8-genericcloud.raw.zstd" \
-            "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst"
+        fetch_almalinux "8" "almalinux-8" "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"
+        ;;
+    almalinux10)
+        fetch_almalinux "10" "almalinux-10" "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
         ;;
     debian12)
-        fetch_image "Debian 12 (Bookworm)" \
-            "debian-12-genericcloud.raw.zstd" \
+        fetch_image "Debian 12 (Bookworm LTS)" \
+            "debian-12-genericcloud-amd64.raw" \
             "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw"
         ;;
+    debian13)
+        fetch_image "Debian 13 (Trixie LTS)" \
+            "debian-13-genericcloud-amd64.raw" \
+            "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.raw"
+        ;;
     all)
-        fetch_image "AlmaLinux 9" \
-            "almalinux-9-genericcloud.raw.zstd" \
-            "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.raw.zst"
-
-        fetch_image "AlmaLinux 8" \
-            "almalinux-8-genericcloud.raw.zstd" \
-            "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.raw.zst"
-
-        fetch_image "Debian 12 (Bookworm)" \
-            "debian-12-genericcloud.raw.zstd" \
+        fetch_almalinux "9" "almalinux-9" "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+        fetch_almalinux "8" "almalinux-8" "https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2"
+        fetch_almalinux "10" "almalinux-10" "https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
+        fetch_image "Debian 12 (Bookworm LTS)" \
+            "debian-12-genericcloud-amd64.raw" \
             "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw"
+        fetch_image "Debian 13 (Trixie LTS)" \
+            "debian-13-genericcloud-amd64.raw" \
+            "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.raw"
         ;;
     *)
         echo -e "${RED}[ERROR] Unsupported distribution target: ${SELECTED_OS}${NC}" >&2

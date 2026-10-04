@@ -1,6 +1,8 @@
 package provision
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -174,3 +176,101 @@ func TestFindRootPartitionFromJSON_NestedChildren(t *testing.T) {
 		t.Fatalf("expected /dev/sda1, got %s", partDebian)
 	}
 }
+
+func TestFindRootPartition_PartLabelRoot(t *testing.T) {
+	// Simulating AlmaLinux 9/10 partition 4 where filesystem label is null but GPT PARTLABEL is "root"
+	almaJSON := []byte(`{
+		"blockdevices": [
+			{
+				"name": "nvme0n1",
+				"path": "/dev/nvme0n1",
+				"size": 22548578304,
+				"type": "disk",
+				"children": [
+					{
+						"name": "nvme0n1p1",
+						"path": "/dev/nvme0n1p1",
+						"size": 1048576,
+						"type": "part",
+						"partlabel": "biosboot"
+					},
+					{
+						"name": "nvme0n1p2",
+						"path": "/dev/nvme0n1p2",
+						"size": 209715200,
+						"type": "part",
+						"partlabel": "EFI System Partition",
+						"fstype": "vfat"
+					},
+					{
+						"name": "nvme0n1p3",
+						"path": "/dev/nvme0n1p3",
+						"size": 1073741824,
+						"type": "part",
+						"partlabel": "boot",
+						"fstype": "xfs"
+					},
+					{
+						"name": "nvme0n1p4",
+						"path": "/dev/nvme0n1p4",
+						"size": 9448882176,
+						"type": "part",
+						"partlabel": "root",
+						"fstype": "xfs",
+						"label": null
+					}
+				]
+			}
+		]
+	}`)
+
+	part, err := findRootPartitionFromJSON(almaJSON, "/dev/nvme0n1")
+	if err != nil {
+		t.Fatalf("failed finding root partition: %v", err)
+	}
+	if part != "/dev/nvme0n1p4" {
+		t.Errorf("expected /dev/nvme0n1p4 from PARTLABEL='root', got %s", part)
+	}
+}
+
+func TestWriteNoCloudSeeds(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := domain.DeploymentConfig{
+		NodeID:       "node-12345",
+		OS:           domain.OSAlmaLinux9,
+		RootPassword: "StrongPassword2026#",
+		NetworkMode:  domain.NetworkModeDHCP,
+	}
+	bootMAC := "52:54:00:11:22:33"
+
+	err := WriteNoCloudSeeds(tempDir, cfg, bootMAC)
+	if err != nil {
+		t.Fatalf("unexpected error writing seeds: %v", err)
+	}
+
+	seedDir := filepath.Join(tempDir, "var", "lib", "cloud", "seed", "nocloud")
+	meta, err := os.ReadFile(filepath.Join(seedDir, "meta-data"))
+	if err != nil {
+		t.Fatalf("failed reading meta-data: %v", err)
+	}
+	if !strings.Contains(string(meta), "node-12345") {
+		t.Errorf("expected instance-id in meta-data, got %s", string(meta))
+	}
+
+	user, err := os.ReadFile(filepath.Join(seedDir, "user-data"))
+	if err != nil {
+		t.Fatalf("failed reading user-data: %v", err)
+	}
+	if !strings.Contains(string(user), "#cloud-config") {
+		t.Errorf("expected #cloud-config header, got %s", string(user))
+	}
+
+	net, err := os.ReadFile(filepath.Join(seedDir, "network-config"))
+	if err != nil {
+		t.Fatalf("failed reading network-config: %v", err)
+	}
+	if !strings.Contains(string(net), "52:54:00:11:22:33") {
+		t.Errorf("expected macaddress in network-config, got %s", string(net))
+	}
+}
+
