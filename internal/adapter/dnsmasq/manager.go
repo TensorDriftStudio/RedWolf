@@ -159,7 +159,6 @@ dhcp-boot=tag:ipxe,http://%s:%d/boot.ipxe?mac=${net0/mac}
 # TFTP Service
 enable-tftp
 tftp-root=%s
-tftp-secure
 
 # Logging
 log-facility=%s/dnsmasq.log

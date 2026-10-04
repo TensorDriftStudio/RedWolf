@@ -24,7 +24,6 @@ dhcp-boot=tag:!ipxe,tag:arm64,ipxe-arm64.efi
 # TFTP Server Configuration for initial PXE bootstrap
 enable-tftp
 tftp-root=/var/lib/redwolf/tftp
-tftp-secure
 
 # Logging
 log-facility=/var/log/redwolf/dnsmasq.log
