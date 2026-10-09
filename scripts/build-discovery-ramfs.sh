@@ -45,7 +45,6 @@ IMAGE_TAG="redwolf-discovery-builder:latest"
 # Build builder image using BuildKit without stale layer cache
 DOCKER_BUILDKIT=1 docker build \
     --no-cache \
-    --network=host \
     -f "${REPO_ROOT}/scripts/Dockerfile.discovery" \
     -t "${IMAGE_TAG}" \
     "${REPO_ROOT}"
