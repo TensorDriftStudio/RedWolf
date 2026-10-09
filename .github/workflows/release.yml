@@ -23,9 +23,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Compile and Package In-Memory Discovery RAMdisk
         run: |
           chmod +x scripts/build-discovery-ramfs.sh scripts/init.sh
@@ -87,9 +84,6 @@ jobs:
           name: discovery-boot-assets
           path: assets/discovery
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Extract Tag or Version
         id: meta
         run: |
@@ -133,13 +127,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push Docker Appliance Images
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          build-args: |
-            VERSION=v${{ steps.meta.outputs.version }}
-            GIT_COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.build_date }}
-          tags: ${{ steps.tags.outputs.tags }}
+        run: |
+          BUILD_TAGS=()
+          while IFS= read -r tag; do
+            tag=$(echo "$tag" | xargs)
+            [ -n "$tag" ] && BUILD_TAGS+=("-t" "$tag")
+          done <<< "${{ steps.tags.outputs.tags }}"
+
+          echo "Building Docker image with tags: ${BUILD_TAGS[*]}"
+          docker build \
+            --build-arg VERSION="v${{ steps.meta.outputs.version }}" \
+            --build-arg GIT_COMMIT="${{ github.sha }}" \
+            --build-arg BUILD_DATE="${{ steps.meta.outputs.build_date }}" \
+            "${BUILD_TAGS[@]}" .
+
+          echo "Pushing Docker images..."
+          while IFS= read -r tag; do
+            tag=$(echo "$tag" | xargs)
+            if [ -n "$tag" ]; then
+              echo "Pushing $tag..."
+              docker push "$tag"
+            fi
+          done <<< "${{ steps.tags.outputs.tags }}"
