@@ -113,7 +113,9 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
   // Cloud-Init Templates State
   const [templates, setTemplates] = useState<CloudInitTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('tpl-base-minimal');
-  const [customUserData, setCustomUserData] = useState<string>('');
+  const [customUserData, setCustomUserData] = useState<string>(
+    '#cloud-config\ngrowpart:\n  mode: auto\n  devices: [\'/\']\nresize_rootfs: true\n\npackage_update: false\nruncmd:\n  - echo "RedWolf bare-metal node initialized successfully" > /etc/redwolf-release\n'
+  );
   const [showCustomYaml, setShowCustomYaml] = useState<boolean>(false);
 
   useEffect(() => {
@@ -282,7 +284,7 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
     setDeployError(null);
 
     const finalTargetDrive = storageMode === 'single' ? targetDrive : (selectedDrives[0] || targetDrive);
-    const finalPreset = storageMode === 'raid1' ? 'raid1' : partitioning;
+    const finalPreset = partitioning === 'lvm' ? 'lvm' : (storageMode === 'raid1' ? 'raid1' : 'standard');
 
     const config: DeploymentConfig = {
       nodeId: node.id,

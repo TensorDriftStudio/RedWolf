@@ -2,6 +2,9 @@ package provision
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
@@ -76,6 +79,118 @@ func TestResolveLVMDeviceNode(t *testing.T) {
 	hyphenNode := resolveLVMDeviceNode("vg-test", "lv-data")
 	if hyphenNode != "/dev/vg-test/lv-data" && hyphenNode != "/dev/mapper/vg--test-lv--data" {
 		t.Errorf("unexpected resolved hyphenated LVM device node: %q", hyphenNode)
+	}
+}
+
+func TestGenerateLVMFstab_CorrectDevicePaths(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	layout := &StorageLayoutResult{
+		IsLVM:         true,
+		RootPartition: "/dev/mapper/vg_system-root",
+		RootFSType:    "xfs",
+		BootPartition: "/dev/md0",
+		BootFSType:    "xfs",
+		ESPPartition:  "/dev/sda1",
+		SwapDevice:    "/dev/mapper/vg_system-swap",
+	}
+
+	subMounts := []lvmMountEntry{
+		{
+			device:     "/dev/mapper/vg_system-home",
+			mountPoint: "/home",
+			fsType:     "xfs",
+		},
+		{
+			device:     "/dev/mapper/vg_system-var",
+			mountPoint: "/var",
+			fsType:     "xfs",
+		},
+	}
+
+	err := generateLVMFstab(ctx, tempDir, layout, subMounts)
+	if err != nil {
+		t.Fatalf("unexpected error generating fstab: %v", err)
+	}
+
+	fstabContent, err := os.ReadFile(filepath.Join(tempDir, "etc", "fstab"))
+	if err != nil {
+		t.Fatalf("failed reading generated fstab: %v", err)
+	}
+	contentStr := string(fstabContent)
+
+	// Must contain /dev/mapper/vg_system-home and NOT /dev/mapper/vg_system-vg_system-home
+	if !strings.Contains(contentStr, "/dev/mapper/vg_system-home /home xfs defaults 0 0") {
+		t.Errorf("expected clean /home device path in fstab, got:\n%s", contentStr)
+	}
+	if strings.Contains(contentStr, "vg_system-vg_system-home") {
+		t.Errorf("fstab contains duplicated vg_system prefix in path: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "/dev/mapper/vg_system-var /var xfs defaults 0 0") {
+		t.Errorf("expected clean /var device path in fstab, got:\n%s", contentStr)
+	}
+	if !strings.Contains(contentStr, "/dev/mapper/vg_system-root / xfs defaults 0 0") {
+		t.Errorf("expected root volume in fstab, got:\n%s", contentStr)
+	}
+}
+
+func TestDirectInjectSecurityCredentials_RedwolfRelease(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := domain.DeploymentConfig{
+		NodeID:       "node-test-123",
+		OS:           domain.OSAlmaLinux9,
+		RootPassword: "StrongPassword123!",
+	}
+
+	err := DirectInjectSecurityCredentials(tempDir, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error injecting credentials: %v", err)
+	}
+
+	releaseFile := filepath.Join(tempDir, "etc", "redwolf-release")
+	content, err := os.ReadFile(releaseFile)
+	if err != nil {
+		t.Fatalf("expected /etc/redwolf-release to exist: %v", err)
+	}
+	if !strings.Contains(string(content), "node-test-123") {
+		t.Errorf("expected node ID in /etc/redwolf-release, got: %s", string(content))
+	}
+	if !strings.Contains(string(content), "AlmaLinux 9") {
+		t.Errorf("expected OS in /etc/redwolf-release, got: %s", string(content))
+	}
+}
+
+func TestWriteNoCloudSeeds_DualPathsAndCloudCfg(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := domain.DeploymentConfig{
+		NodeID: "node-test-456",
+		OS:     domain.OSDebian12,
+	}
+
+	err := WriteNoCloudSeeds(tempDir, cfg, "00:11:22:33:44:55")
+	if err != nil {
+		t.Fatalf("unexpected error writing seeds: %v", err)
+	}
+
+	// Verify nocloud and nocloud-net directories exist
+	seedNocloud := filepath.Join(tempDir, "var", "lib", "cloud", "seed", "nocloud", "meta-data")
+	seedNocloudNet := filepath.Join(tempDir, "var", "lib", "cloud", "seed", "nocloud-net", "meta-data")
+	if _, err := os.Stat(seedNocloud); err != nil {
+		t.Errorf("expected nocloud meta-data to exist: %v", err)
+	}
+	if _, err := os.Stat(seedNocloudNet); err != nil {
+		t.Errorf("expected nocloud-net meta-data to exist: %v", err)
+	}
+
+	// Verify 99-redwolf.cfg exists
+	cloudCfg := filepath.Join(tempDir, "etc", "cloud", "cloud.cfg.d", "99-redwolf.cfg")
+	cfgData, err := os.ReadFile(cloudCfg)
+	if err != nil {
+		t.Errorf("expected 99-redwolf.cfg to exist: %v", err)
+	}
+	if !strings.Contains(string(cfgData), "datasource_list: [ NoCloud, None ]") {
+		t.Errorf("unexpected 99-redwolf.cfg content: %s", string(cfgData))
 	}
 }
 

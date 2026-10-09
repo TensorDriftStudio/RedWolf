@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,24 +31,23 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 		"drive", targetDrive,
 		"preset", task.Config.PartitioningPreset,
 		"layout_mode", task.Config.Storage.LayoutMode,
+		"raid_level", task.Config.Storage.RAIDLevel,
 	)
 
 	// Step 1: Storage Architecture & Topology Preparation (Single disk, mdraid, or LVM)
 	_ = reporter.Report(ctx, nodeID, 5, "Preparing block storage target...", "Configuring storage topology and sanitizing block targets...")
 	layout, err := SetupStorageArchitecture(ctx, task.Config)
 	if err != nil {
-		slog.WarnContext(ctx, "storage architecture setup warning; proceeding with fallback", "error", err)
-		layout = &StorageLayoutResult{
-			TargetDrive: targetDrive,
-			ESPDrives:   []string{targetDrive},
-			TargetDisk:  targetDrive,
-		}
+		errMsg := fmt.Sprintf("Storage architecture setup failed: %v", err)
+		slog.ErrorContext(ctx, "storage architecture setup error", "error", err)
+		_ = reporter.Report(ctx, nodeID, 0, "Storage Setup Failed", errMsg)
+		return fmt.Errorf("storage setup error: %w", err)
 	}
 
-	// Route based on storage architecture (LVM vs Standard Block Stream)
-	if layout.IsLVM {
-		if err := executeLVMDeployment(ctx, task, layout, bootMAC, reporter); err != nil {
-			errMsg := fmt.Sprintf("LVM deployment failed: %v", err)
+	// Route based on storage architecture (LVM/RAID extraction vs Standard Block Stream)
+	if layout.IsLVM || layout.IsSoftwareRAID {
+		if err := executeExtractDeployment(ctx, task, layout, bootMAC, reporter); err != nil {
+			errMsg := fmt.Sprintf("Deployment failed: %v", err)
 			_ = reporter.Report(ctx, nodeID, 0, "Deployment Failed", errMsg)
 			return err
 		}
@@ -70,7 +70,7 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 	return nil
 }
 
-// executeStandardDeployment streams the compressed raw image directly to the target disk,
+// executeStandardDeployment streams the compressed raw image directly to the target disk (Tier 1 block streaming),
 // auto-expands the root partition, and writes cloud-init configurations.
 func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask, layout *StorageLayoutResult, bootMAC string, reporter ProgressReporter) error {
 	nodeID := task.NodeID
@@ -83,7 +83,7 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 		_ = reporter.Report(ctx, nodeID, pct, fmt.Sprintf("Streaming %s...", task.OS), msg)
 	}
 
-	// Pre-wipe target disk to eliminate previous partition tables, secondary GPT headers, and ghost partitions
+	// Pre-wipe target disk to eliminate previous partition tables and headers
 	_ = reporter.Report(ctx, nodeID, 5, "Preparing target disk...", fmt.Sprintf("Wiping signatures and partition tables on %s", streamTarget))
 	if err := WipeTargetDisk(ctx, streamTarget); err != nil {
 		slog.WarnContext(ctx, "non-fatal warning during pre-wipe of target disk", "drive", streamTarget, "error", err)
@@ -106,14 +106,6 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 		return fmt.Errorf("cloud-init injection error: %w", err)
 	}
 
-	// For multi-disk Software RAID, synchronize UEFI boot files to all member ESPs
-	if layout.IsSoftwareRAID && len(layout.MemberESPs) > 0 {
-		_ = reporter.Report(ctx, nodeID, 90, "Synchronizing RAID member ESPs...", "Writing redundant UEFI bootloaders to all drive ESPs")
-		if err := syncMemberESPs(ctx, layout.MemberESPs, streamTarget, task.OS); err != nil {
-			slog.WarnContext(ctx, "non-fatal warning synchronizing member ESPs", "error", err)
-		}
-	}
-
 	// Register UEFI bootloader in NVRAM for all member disks
 	_ = reporter.Report(ctx, nodeID, 95, "Registering UEFI boot entry...", "Configuring NVRAM with efibootmgr")
 	for _, espTarget := range layout.ESPDrives {
@@ -125,80 +117,26 @@ func executeStandardDeployment(ctx context.Context, task *domain.DeploymentTask,
 	return nil
 }
 
-func syncMemberESPs(ctx context.Context, memberESPs []string, streamTarget string, osType ...domain.OperatingSystem) error {
-	rootPart, err := findRootPartition(ctx, streamTarget, osType...)
-	if err != nil {
-		return err
-	}
-
-	rootMount := "/mnt/redwolf-raid-sync"
-	if err := os.MkdirAll(rootMount, 0755); err != nil {
-		return err
-	}
-	var targetOS domain.OperatingSystem
-	if len(osType) > 0 {
-		targetOS = osType[0]
-	}
-	if err := MountTargetFilesystem(ctx, rootPart, rootMount, targetOS, "-o", "ro"); err != nil {
-		return fmt.Errorf("failed mounting root for ESP sync: %w", err)
-	}
-	defer func() {
-		_ = exec.CommandContext(context.Background(), "umount", rootMount).Run()
-	}()
-
-	var efiSrc string
-	possiblePaths := []string{
-		filepath.Join(rootMount, "boot", "efi", "EFI"),
-		filepath.Join(rootMount, "EFI"),
-	}
-	for _, p := range possiblePaths {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			efiSrc = p
-			break
-		}
-	}
-
-	if efiSrc == "" {
-		return fmt.Errorf("could not locate EFI directory in rootfs")
-	}
-
-	espMount := "/mnt/redwolf-member-esp"
-	_ = os.MkdirAll(espMount, 0755)
-
-	for _, espPart := range memberESPs {
-		_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
-		if out, err := exec.CommandContext(ctx, "mount", espPart, espMount).CombinedOutput(); err == nil {
-			targetEFI := filepath.Join(espMount, "EFI")
-			_ = os.MkdirAll(targetEFI, 0755)
-			_ = exec.CommandContext(ctx, "cp", "-a", efiSrc+"/.", targetEFI+"/").Run()
-			_ = exec.CommandContext(ctx, "umount", espMount).Run()
-			slog.InfoContext(ctx, "synchronized redundant UEFI bootloader to RAID member ESP", "partition", espPart)
-		} else {
-			slog.WarnContext(ctx, "failed mounting member ESP", "partition", espPart, "output", string(out))
-		}
-	}
-	return nil
-}
-
-// executeLVMDeployment mounts target LVM logical volumes, unpacks the distribution image,
-// generates the LVM /etc/fstab, injects cloud-init, and configures the UEFI bootloader.
-func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layout *StorageLayoutResult, bootMAC string, reporter ProgressReporter) error {
+// executeExtractDeployment extracts and synchronizes the OS distribution image to structured target volumes
+// (LVM logical volumes or Software RAID partitions), generates clean /etc/fstab, injects cloud-init, and sets up UEFI.
+func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, layout *StorageLayoutResult, bootMAC string, reporter ProgressReporter) error {
 	nodeID := task.NodeID
 	targetRootMount := "/mnt/redwolf-target"
 	if err := os.MkdirAll(targetRootMount, 0755); err != nil {
 		return fmt.Errorf("failed creating mount directory %s: %w", targetRootMount, err)
 	}
 
-	// 1. Mount root Logical Volume
-	rootLV := layout.RootPartition
-	if rootLV == "" {
-		rootLV = resolveLVMDeviceNode("vg_system", "root")
-	} else if _, err := os.Stat(rootLV); err != nil {
-		rootLV = resolveLVMDeviceNode("vg_system", "root")
+	// 1. Mount root filesystem (Logical Volume or root RAID device)
+	rootDevice := layout.RootPartition
+	if rootDevice == "" {
+		if layout.IsLVM {
+			rootDevice = resolveLVMDeviceNode("vg_system", "root")
+		} else {
+			rootDevice = layout.TargetDrive
+		}
 	}
 
-	// Pre-load essential filesystem kernel drivers into running kernel
-	for _, mod := range []string{"dm_mod", "xfs", "ext4"} {
+	for _, mod := range []string{"dm_mod", "md_mod", "xfs", "ext4"} {
 		_ = exec.CommandContext(ctx, "modprobe", mod).Run()
 	}
 
@@ -215,11 +153,10 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 		rootFSType = "xfs"
 	}
 
-	_ = reporter.Report(ctx, nodeID, 15, "Mounting LVM target hierarchy...", fmt.Sprintf("Mounting root volume %s (%s) to %s", rootLV, rootFSType, targetRootMount))
-	if out, err := exec.CommandContext(ctx, "mount", "-t", rootFSType, rootLV, targetRootMount).CombinedOutput(); err != nil {
-		// Attempt fallback mount without explicit type
-		if fallbackOut, fallbackErr := exec.CommandContext(ctx, "mount", rootLV, targetRootMount).CombinedOutput(); fallbackErr != nil {
-			return fmt.Errorf("failed mounting root LV %s: %w (output: %s; with -t %s: %s)", rootLV, fallbackErr, string(fallbackOut), rootFSType, string(out))
+	_ = reporter.Report(ctx, nodeID, 15, "Mounting target filesystem hierarchy...", fmt.Sprintf("Mounting root volume %s (%s) to %s", rootDevice, rootFSType, targetRootMount))
+	if out, err := exec.CommandContext(ctx, "mount", "-t", rootFSType, rootDevice, targetRootMount).CombinedOutput(); err != nil {
+		if fallbackOut, fallbackErr := exec.CommandContext(ctx, "mount", rootDevice, targetRootMount).CombinedOutput(); fallbackErr != nil {
+			return fmt.Errorf("failed mounting root volume %s: %w (output: %s; with -t %s: %s)", rootDevice, fallbackErr, string(fallbackOut), rootFSType, string(out))
 		}
 	}
 
@@ -240,21 +177,25 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 			bootFSType = "xfs"
 		}
 	}
-	if out, err := exec.CommandContext(ctx, "mount", "-t", bootFSType, layout.BootPartition, bootMount).CombinedOutput(); err != nil {
-		if out2, err2 := exec.CommandContext(ctx, "mount", layout.BootPartition, bootMount).CombinedOutput(); err2 != nil {
-			slog.WarnContext(ctx, "failed mounting boot partition", "partition", layout.BootPartition, "output", string(out), "fallback_output", string(out2))
+	if layout.BootPartition != "" {
+		if out, err := exec.CommandContext(ctx, "mount", "-t", bootFSType, layout.BootPartition, bootMount).CombinedOutput(); err != nil {
+			if out2, err2 := exec.CommandContext(ctx, "mount", layout.BootPartition, bootMount).CombinedOutput(); err2 != nil {
+				slog.WarnContext(ctx, "failed mounting boot partition", "partition", layout.BootPartition, "output", string(out), "fallback_output", string(out2))
+			}
 		}
 	}
 
 	efiMount := filepath.Join(bootMount, "efi")
 	_ = os.MkdirAll(efiMount, 0755)
-	if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", layout.ESPPartition, efiMount).CombinedOutput(); err != nil {
-		if out2, err2 := exec.CommandContext(ctx, "mount", layout.ESPPartition, efiMount).CombinedOutput(); err2 != nil {
-			slog.WarnContext(ctx, "failed mounting efi partition", "partition", layout.ESPPartition, "output", string(out), "fallback_output", string(out2))
+	if layout.ESPPartition != "" {
+		if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", layout.ESPPartition, efiMount).CombinedOutput(); err != nil {
+			if out2, err2 := exec.CommandContext(ctx, "mount", layout.ESPPartition, efiMount).CombinedOutput(); err2 != nil {
+				slog.WarnContext(ctx, "failed mounting efi partition", "partition", layout.ESPPartition, "output", string(out), "fallback_output", string(out2))
+			}
 		}
 	}
 
-	// 3. Mount additional Logical Volumes (e.g. /var, /home)
+	// 3. Mount additional Logical Volumes (e.g. /home, /var)
 	var subMounts []lvmMountEntry
 	for _, vol := range layout.LVMVolumes {
 		mp := strings.TrimSpace(vol.MountPoint)
@@ -280,7 +221,7 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 		})
 	}
 
-	// 4. Stream and unpack OS image to sparse file
+	// 4. Stream and unpack OS image to loop container
 	_ = reporter.Report(ctx, nodeID, 25, "Streaming distribution image...", "Streaming and decompressing raw OS image to loop container")
 	tmpImage := "/tmp/redwolf-cloud-image.raw"
 	onProgress := func(pct int, writtenBytes int64, msg string) {
@@ -289,7 +230,7 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 	}
 
 	if err := StreamImage(ctx, task.ImageURL, tmpImage, onProgress); err != nil {
-		return fmt.Errorf("failed streaming image for LVM deployment: %w", err)
+		return fmt.Errorf("failed streaming image: %w", err)
 	}
 	defer os.Remove(tmpImage)
 
@@ -308,44 +249,106 @@ func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layo
 	_ = exec.CommandContext(ctx, "partprobe", loopDev).Run()
 	time.Sleep(1 * time.Second)
 
-	// 6. Copy files from source partitions into target LVM filesystem hierarchy
-	if err := extractImageToLVM(ctx, loopDev, targetRootMount, reporter, nodeID, task.OS); err != nil {
-		return fmt.Errorf("failed extracting source image to LVM target: %w", err)
+	// 6. Copy files from source partitions into target filesystem hierarchy
+	sourceRootPart, err := extractImageToTarget(ctx, loopDev, targetRootMount, reporter, nodeID, task.OS)
+	if err != nil {
+		return fmt.Errorf("failed extracting source image to target: %w", err)
 	}
 
-	// 7. Generate clean /etc/fstab for the new LVM layout
-	_ = reporter.Report(ctx, nodeID, 80, "Generating LVM /etc/fstab...", "Writing filesystem table with device mapper and partition UUIDs")
+	// 7. Update Bootloader root parameters (BLS entries / grub.cfg)
+	sourceRootUUID := getPartitionUUID(ctx, sourceRootPart)
+	updateBootloaderConfigs(ctx, targetRootMount, layout, sourceRootUUID)
+
+	// 8. Generate clean /etc/fstab
+	_ = reporter.Report(ctx, nodeID, 80, "Generating /etc/fstab...", "Writing filesystem table with device mapper and partition UUIDs")
 	if err := generateLVMFstab(ctx, targetRootMount, layout, subMounts); err != nil {
-		slog.WarnContext(ctx, "warning generating fstab for LVM", "error", err)
+		slog.WarnContext(ctx, "warning generating fstab", "error", err)
 	}
 
-	// 8. Inject Cloud-Init NoCloud seed & direct credentials
+	// 9. Inject mdadm.conf if Software RAID is configured
+	if layout.IsSoftwareRAID {
+		_ = reporter.Report(ctx, nodeID, 83, "Synchronizing RAID configuration...", "Writing mdadm.conf to rootfs")
+		if err := InjectMDADMConfig(ctx, targetRootMount); err != nil {
+			slog.WarnContext(ctx, "warning injecting mdadm.conf into rootfs", "error", err)
+		}
+	}
+
+	// 10. Inject Cloud-Init NoCloud seed & direct credentials + /etc/redwolf-release
 	_ = reporter.Report(ctx, nodeID, 85, "Injecting Cloud-Init NoCloud seed...", "Writing user-data, meta-data, and network-config")
 	if err := WriteNoCloudSeeds(targetRootMount, task.Config, bootMAC); err != nil {
-		return fmt.Errorf("failed injecting cloud-init into LVM rootfs: %w", err)
+		return fmt.Errorf("failed injecting cloud-init: %w", err)
 	}
 	if err := DirectInjectSecurityCredentials(targetRootMount, task.Config); err != nil {
-		slog.WarnContext(ctx, "non-fatal warning injecting security credentials into LVM rootfs", "error", err)
+		slog.WarnContext(ctx, "non-fatal warning injecting security credentials", "error", err)
 	}
 
-	// 9. Unmount all target partitions
+	// 11. Unmount all target partitions cleanly
 	_ = reporter.Report(ctx, nodeID, 90, "Finalizing storage writes...", "Flushing disk buffers and unmounting target volumes")
 	unmountAllUnder(ctx, targetRootMount)
 
-	// 10. Register UEFI boot entry
-	_ = reporter.Report(ctx, nodeID, 95, "Registering UEFI boot entry...", "Configuring NVRAM with efibootmgr")
-	bootDisk := layout.TargetDisk
-	if bootDisk == "" {
-		bootDisk = task.TargetDrivePath
+	// 12. For multi-disk Software RAID, synchronize UEFI boot files to all member ESPs
+	if layout.IsSoftwareRAID && len(layout.MemberESPs) > 1 {
+		_ = reporter.Report(ctx, nodeID, 92, "Synchronizing RAID member ESPs...", "Writing redundant UEFI bootloaders to all drive ESPs")
+		if err := syncMemberESPs(ctx, layout.MemberESPs); err != nil {
+			slog.WarnContext(ctx, "non-fatal warning synchronizing member ESPs", "error", err)
+		}
 	}
-	if err := ConfigureBootloader(ctx, bootDisk, task.OS); err != nil {
-		slog.WarnContext(ctx, "non-fatal warning during bootloader config", "drive", bootDisk, "error", err)
+
+	// 13. Register UEFI boot entry in NVRAM for all member disks
+	_ = reporter.Report(ctx, nodeID, 95, "Registering UEFI boot entry...", "Configuring NVRAM with efibootmgr")
+	for _, espTarget := range layout.ESPDrives {
+		if err := ConfigureBootloader(ctx, espTarget, task.OS); err != nil {
+			slog.WarnContext(ctx, "non-fatal warning during bootloader config", "drive", espTarget, "error", err)
+		}
 	}
 
 	return nil
 }
 
-func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, reporter ProgressReporter, nodeID string, osType domain.OperatingSystem) error {
+// executeLVMDeployment is an alias retained for package compatibility.
+func executeLVMDeployment(ctx context.Context, task *domain.DeploymentTask, layout *StorageLayoutResult, bootMAC string, reporter ProgressReporter) error {
+	return executeExtractDeployment(ctx, task, layout, bootMAC, reporter)
+}
+
+func syncMemberESPs(ctx context.Context, memberESPs []string) error {
+	if len(memberESPs) < 2 {
+		return nil
+	}
+	primaryESP := memberESPs[0]
+	primaryMount := "/mnt/redwolf-primary-esp"
+	_ = os.MkdirAll(primaryMount, 0755)
+
+	if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", "-o", "ro", primaryESP, primaryMount).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed mounting primary ESP %s: %w (output: %s)", primaryESP, err, string(out))
+	}
+	defer func() {
+		_ = exec.CommandContext(context.Background(), "umount", primaryMount).Run()
+	}()
+
+	efiSrc := filepath.Join(primaryMount, "EFI")
+	if fi, err := os.Stat(efiSrc); err != nil || !fi.IsDir() {
+		return fmt.Errorf("EFI directory not found in primary ESP %s", primaryESP)
+	}
+
+	targetMount := "/mnt/redwolf-member-esp"
+	_ = os.MkdirAll(targetMount, 0755)
+
+	for _, espPart := range memberESPs[1:] {
+		_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
+		if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", espPart, targetMount).CombinedOutput(); err == nil {
+			targetEFI := filepath.Join(targetMount, "EFI")
+			_ = os.MkdirAll(targetEFI, 0755)
+			_ = exec.CommandContext(ctx, "cp", "-a", efiSrc+"/.", targetEFI+"/").Run()
+			_ = exec.CommandContext(ctx, "umount", targetMount).Run()
+			slog.InfoContext(ctx, "synchronized redundant UEFI bootloader to RAID member ESP", "partition", espPart)
+		} else {
+			slog.WarnContext(ctx, "failed mounting member ESP", "partition", espPart, "output", string(out))
+		}
+	}
+	return nil
+}
+
+func extractImageToTarget(ctx context.Context, loopDev, targetRootMount string, reporter ProgressReporter, nodeID string, osType domain.OperatingSystem) (string, error) {
 	// Source root detection
 	sourceRootPart, err := findRootPartition(ctx, loopDev, osType)
 	if err != nil {
@@ -355,13 +358,13 @@ func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, rep
 	srcRootMount := "/mnt/redwolf-source-root"
 	_ = os.MkdirAll(srcRootMount, 0755)
 	if err := MountTargetFilesystem(ctx, sourceRootPart, srcRootMount, osType, "-o", "ro"); err != nil {
-		return fmt.Errorf("failed mounting source root %s: %w", sourceRootPart, err)
+		return "", fmt.Errorf("failed mounting source root %s: %w", sourceRootPart, err)
 	}
 	defer func() {
 		_ = exec.CommandContext(context.Background(), "umount", srcRootMount).Run()
 	}()
 
-	_ = reporter.Report(ctx, nodeID, 70, "Synchronizing root filesystem...", "Copying operating system root files into LVM volumes")
+	_ = reporter.Report(ctx, nodeID, 70, "Synchronizing root filesystem...", "Copying operating system root files into target volumes")
 	cpRootCmd := exec.CommandContext(ctx, "cp", "-a", srcRootMount+"/.", targetRootMount+"/")
 	if out, err := cpRootCmd.CombinedOutput(); err != nil {
 		slog.WarnContext(ctx, "cp rootfs warning", "error", err, "output", string(out))
@@ -396,13 +399,29 @@ func extractImageToLVM(ctx context.Context, loopDev, targetRootMount string, rep
 		}
 	}
 
-	return nil
+	return sourceRootPart, nil
 }
 
 type lvmMountEntry struct {
 	device     string
 	mountPoint string
 	fsType     string
+}
+
+func canonicalMapperDev(dev string) string {
+	if strings.HasPrefix(dev, "/dev/mapper/") {
+		return dev
+	}
+	if strings.HasPrefix(dev, "/dev/") {
+		parts := strings.Split(strings.TrimPrefix(dev, "/dev/"), "/")
+		if len(parts) == 2 {
+			return fmt.Sprintf("/dev/mapper/%s-%s",
+				strings.ReplaceAll(parts[0], "-", "--"),
+				strings.ReplaceAll(parts[1], "-", "--"),
+			)
+		}
+	}
+	return dev
 }
 
 func generateLVMFstab(ctx context.Context, targetRootMount string, layout *StorageLayoutResult, subMounts []lvmMountEntry) error {
@@ -425,19 +444,37 @@ func generateLVMFstab(ctx context.Context, targetRootMount string, layout *Stora
 	var sb strings.Builder
 	sb.WriteString("# /etc/fstab: auto-generated by RedWolf Bare-Metal Provisioning Engine\n")
 	sb.WriteString("# <file system> <mount point> <type> <options> <dump> <pass>\n")
-	sb.WriteString(fmt.Sprintf("/dev/mapper/vg_system-root / %s defaults 0 0\n", rootFs))
 
-	for _, sm := range subMounts {
-		fs := sm.fsType
-		if fs == "" {
-			fs = "xfs"
+	isLVM := layout.IsLVM || len(layout.LVMVolumes) > 0 || layout.LVMVolumeGroup != ""
+	if isLVM {
+		rootDev := layout.RootPartition
+		if rootDev == "" {
+			rootDev = "/dev/mapper/vg_system-root"
+		} else {
+			rootDev = canonicalMapperDev(rootDev)
 		}
-		name := filepath.Base(sm.device)
-		sb.WriteString(fmt.Sprintf("/dev/mapper/vg_system-%s %s %s defaults 0 0\n", name, sm.mountPoint, fs))
-	}
+		sb.WriteString(fmt.Sprintf("%s / %s defaults 0 0\n", rootDev, rootFs))
 
-	if layout.SwapDevice != "" {
-		sb.WriteString("/dev/mapper/vg_system-swap none swap sw 0 0\n")
+		for _, sm := range subMounts {
+			fs := sm.fsType
+			if fs == "" {
+				fs = "xfs"
+			}
+			devNode := canonicalMapperDev(sm.device)
+			sb.WriteString(fmt.Sprintf("%s %s %s defaults 0 0\n", devNode, sm.mountPoint, fs))
+		}
+
+		if layout.SwapDevice != "" {
+			swapDev := canonicalMapperDev(layout.SwapDevice)
+			sb.WriteString(fmt.Sprintf("%s none swap sw 0 0\n", swapDev))
+		}
+	} else if layout.IsSoftwareRAID {
+		rootUUID := getPartitionUUID(ctx, layout.RootPartition)
+		if rootUUID != "" {
+			sb.WriteString(fmt.Sprintf("UUID=%s / %s defaults 0 0\n", rootUUID, rootFs))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s / %s defaults 0 0\n", layout.RootPartition, rootFs))
+		}
 	}
 
 	if bootUUID != "" {
@@ -455,7 +492,71 @@ func generateLVMFstab(ctx context.Context, targetRootMount string, layout *Stora
 	return os.WriteFile(fstabPath, []byte(sb.String()), 0644)
 }
 
+func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout *StorageLayoutResult, sourceRootUUID string) {
+	newRootUUID := getPartitionUUID(ctx, layout.RootPartition)
+	var rootArg string
+	if layout.IsLVM {
+		rootArg = "root=/dev/mapper/vg_system-root rd.lvm.lv=vg_system/root"
+	} else if layout.IsSoftwareRAID {
+		if newRootUUID != "" {
+			rootArg = fmt.Sprintf("root=UUID=%s rd.md=1", newRootUUID)
+		} else {
+			rootArg = fmt.Sprintf("root=%s rd.md=1", layout.RootPartition)
+		}
+	}
+
+	// 1. Update BLS entries (/boot/loader/entries/*.conf)
+	entriesDir := filepath.Join(targetRootMount, "boot", "loader", "entries")
+	if entries, err := os.ReadDir(entriesDir); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".conf") {
+				p := filepath.Join(entriesDir, e.Name())
+				if data, err := os.ReadFile(p); err == nil {
+					content := string(data)
+					if sourceRootUUID != "" && rootArg != "" {
+						content = strings.ReplaceAll(content, "root=UUID="+sourceRootUUID, rootArg)
+						if newRootUUID != "" {
+							content = strings.ReplaceAll(content, "UUID="+sourceRootUUID, "UUID="+newRootUUID)
+						}
+					}
+					lines := strings.Split(content, "\n")
+					for idx, line := range lines {
+						trimmed := strings.TrimSpace(line)
+						if strings.HasPrefix(trimmed, "options ") {
+							if layout.IsLVM && !strings.Contains(line, "rd.lvm.lv=vg_system/root") {
+								lines[idx] = line + " rd.lvm.lv=vg_system/root"
+							}
+							if layout.IsSoftwareRAID && !strings.Contains(line, "rd.md=1") {
+								lines[idx] = line + " rd.md=1"
+							}
+						}
+					}
+					_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0644)
+				}
+			}
+		}
+	}
+
+	// 2. Update Debian / GRUB configs (/boot/grub/grub.cfg, /boot/grub2/grub.cfg)
+	grubPaths := []string{
+		filepath.Join(targetRootMount, "boot", "grub", "grub.cfg"),
+		filepath.Join(targetRootMount, "boot", "grub2", "grub.cfg"),
+	}
+	for _, gp := range grubPaths {
+		if data, err := os.ReadFile(gp); err == nil && sourceRootUUID != "" {
+			content := string(data)
+			if newRootUUID != "" {
+				content = strings.ReplaceAll(content, sourceRootUUID, newRootUUID)
+			}
+			_ = os.WriteFile(gp, []byte(content), 0644)
+		}
+	}
+}
+
 func getPartitionUUID(ctx context.Context, partDev string) string {
+	if partDev == "" {
+		return ""
+	}
 	cmd := exec.CommandContext(ctx, "blkid", "-s", "UUID", "-o", "value", partDev)
 	out, err := cmd.Output()
 	if err == nil && len(out) > 0 {
@@ -481,10 +582,13 @@ func unmountAllUnder(ctx context.Context, rootMount string) {
 			}
 		}
 	}
-	// Sort by descending length (deepest mounts first)
-	for i := len(mounts) - 1; i >= 0; i-- {
-		_ = exec.CommandContext(ctx, "umount", mounts[i]).Run()
+	// Sort by descending string length so deepest nested mount points are unmounted first
+	sort.Slice(mounts, func(i, j int) bool {
+		return len(mounts[i]) > len(mounts[j])
+	})
+
+	for _, m := range mounts {
+		_ = exec.CommandContext(ctx, "umount", m).Run()
 	}
 	_ = exec.CommandContext(ctx, "umount", rootMount).Run()
 }
-

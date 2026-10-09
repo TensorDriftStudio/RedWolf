@@ -94,6 +94,20 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentConfig) error {
 	var errs []string
 
+	// 0. Direct /etc/redwolf-release injection
+	_ = os.MkdirAll(filepath.Join(mountPoint, "etc"), 0755)
+	releasePath := filepath.Join(mountPoint, "etc", "redwolf-release")
+	releaseContent := fmt.Sprintf("RedWolf Bare-Metal Provisioning Engine\nNode ID: %s\nOperating System: %s\nProvisioned: %s\n",
+		cfg.NodeID,
+		cfg.OS,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if err := os.WriteFile(releasePath, []byte(releaseContent), 0644); err != nil {
+		errs = append(errs, fmt.Sprintf("failed writing /etc/redwolf-release: %v", err))
+	} else {
+		slog.Info("injected /etc/redwolf-release successfully into rootfs", "path", releasePath)
+	}
+
 	// 1. Direct /etc/shadow injection
 	if cfg.RootPassword != "" {
 		shadowPath := filepath.Join(mountPoint, "etc", "shadow")
@@ -199,26 +213,48 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 
 // WriteNoCloudSeeds generates and writes instance meta-data, user-data, and network-config into the target rootfs.
 func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC string) error {
-	seedDir := filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud")
-	if err := os.MkdirAll(seedDir, 0755); err != nil {
-		return fmt.Errorf("failed creating seed directory %s: %w", seedDir, err)
+	seedDirs := []string{
+		filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud"),
+		filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud-net"),
 	}
 
 	hostname := fmt.Sprintf("node-%s", strings.ToLower(strings.ReplaceAll(bootMAC, ":", "")))
 	metaDataContent := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", cfg.NodeID, hostname)
-	if err := os.WriteFile(filepath.Join(seedDir, "meta-data"), []byte(metaDataContent), 0644); err != nil {
-		return fmt.Errorf("failed writing meta-data: %w", err)
-	}
-
 	userDataContent := generateUserData(cfg)
-	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userDataContent), 0644); err != nil {
-		return fmt.Errorf("failed writing user-data: %w", err)
+	networkConfigContent := generateNetworkConfig(cfg, bootMAC)
+
+	for _, seedDir := range seedDirs {
+		if err := os.MkdirAll(seedDir, 0755); err != nil {
+			return fmt.Errorf("failed creating seed directory %s: %w", seedDir, err)
+		}
+		if err := os.WriteFile(filepath.Join(seedDir, "meta-data"), []byte(metaDataContent), 0644); err != nil {
+			return fmt.Errorf("failed writing meta-data: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userDataContent), 0644); err != nil {
+			return fmt.Errorf("failed writing user-data: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(seedDir, "network-config"), []byte(networkConfigContent), 0644); err != nil {
+			return fmt.Errorf("failed writing network-config: %w", err)
+		}
 	}
 
-	networkConfigContent := generateNetworkConfig(cfg, bootMAC)
-	if err := os.WriteFile(filepath.Join(seedDir, "network-config"), []byte(networkConfigContent), 0644); err != nil {
-		return fmt.Errorf("failed writing network-config: %w", err)
-	}
+	// Inject 99-redwolf.cfg to force NoCloud datasource across AlmaLinux, Debian, and Ubuntu
+	cloudCfgDir := filepath.Join(mountPoint, "etc", "cloud", "cloud.cfg.d")
+	_ = os.MkdirAll(cloudCfgDir, 0755)
+	dsConfig := "# RedWolf Provisioning Engine NoCloud Datasource Configuration\n" +
+		"datasource_list: [ NoCloud, None ]\n" +
+		"datasource:\n" +
+		"  NoCloud:\n" +
+		"    seed_dir: /var/lib/cloud/seed/nocloud\n" +
+		"    fs_label: null\n"
+	_ = os.WriteFile(filepath.Join(cloudCfgDir, "99-redwolf.cfg"), []byte(dsConfig), 0644)
+
+	// Clean stale cloud-init artifacts from distro base image
+	_ = os.Remove(filepath.Join(mountPoint, "etc", "cloud", "cloud-init.disabled"))
+	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "instance"))
+	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "instances"))
+	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "data"))
+	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "sem"))
 
 	return nil
 }
@@ -262,6 +298,12 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 		sb.WriteString("    content: |\n")
 		sb.WriteString("      PermitRootLogin yes\n")
 		sb.WriteString("      PasswordAuthentication yes\n")
+		if !strings.Contains(base, "/etc/redwolf-release") {
+			sb.WriteString("  - path: /etc/redwolf-release\n")
+			sb.WriteString("    permissions: '0644'\n")
+			sb.WriteString("    content: |\n")
+			sb.WriteString("      RedWolf Bare-Metal Provisioning Engine\n")
+		}
 		return sb.String()
 	}
 
@@ -311,8 +353,12 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 	sb.WriteString("    content: |\n")
 	sb.WriteString("      PermitRootLogin yes\n")
 	sb.WriteString("      PasswordAuthentication yes\n")
+	sb.WriteString("  - path: /etc/redwolf-release\n")
+	sb.WriteString("    permissions: '0644'\n")
+	sb.WriteString("    content: |\n")
+	sb.WriteString("      RedWolf Bare-Metal Provisioning Engine\n")
 	sb.WriteString("runcmd:\n")
-	sb.WriteString("  - [ echo, 'RedWolf Bare-Metal Provisioning Complete' ]\n")
+	sb.WriteString("  - echo \"RedWolf bare-metal node initialized successfully\" > /etc/redwolf-release\n")
 
 	return sb.String()
 }

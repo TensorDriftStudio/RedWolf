@@ -29,7 +29,7 @@ if [ ! -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ] || [ ! -f "$REDWOLF_IMA
     echo "🌐 Discovery RAMdisk missing in $REDWOLF_IMAGE_DIR/discovery."
     echo "📦 Attempting automatic download of prebuilt discovery assets from GitHub Releases..."
     mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
-    RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.4}"
+    RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.5}"
     RELEASE_BASE_URL="https://github.com/TensorDriftStudio/RedWolf/releases/download/${RELEASE_TAG}"
     if curl -f -sSL "${RELEASE_BASE_URL}/initramfs.img" -o "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" 2>/dev/null && \
        curl -f -sSL "${RELEASE_BASE_URL}/vmlinuz" -o "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" 2>/dev/null; then

@@ -55,6 +55,11 @@ depmod -a 2>/dev/null || true
 
 DRIVERS="
 dm_mod
+md_mod
+raid0
+raid1
+raid10
+linear
 xfs
 ext4
 vfat

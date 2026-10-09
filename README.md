@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.4%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.2.5%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.2.4` — Immutable release version
+  * `wolverandover/redwolf:1.2.5` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,12 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.2.4 — Storage Autodetection & SELinux Relabeling Release (Current)
+### ✅ Version 1.2.5 — Software RAID, LVM Volume Architecture & Cloud-Init Resilience Release (Current)
+- [x] **Multi-Disk Software RAID (`mdadm`):** Added RAID modules to initramfs, partition settling, and unified Software RAID + LVM layout.
+- [x] **LVM Subvolume Mounts & Bootloader:** Fixed `/etc/fstab` `/dev/mapper` path generation and BLS/GRUB `rd.lvm.lv` kernel parameters.
+- [x] **Cloud-Init Resilience:** Offline `/etc/redwolf-release` injection and dual NoCloud seed paths (`nocloud` & `nocloud-net`).
+
+### ✅ Version 1.2.4 — Storage Autodetection & SELinux Relabeling Release
 - [x] **Filesystem Autodetection & Mount Resilience:** Implemented `MountTargetFilesystem` with proactive filesystem driver probing and kernel module loading.
 - [x] **SELinux First-Boot Relabeling:** Added `/.autorelabel` injection to guarantee password authentication on KVM/console for RHEL/AlmaLinux.
 - [x] **UI Polish & Version Synchronization:** Cleaned up redundant interface indicators and synchronized frontend version with backend API.

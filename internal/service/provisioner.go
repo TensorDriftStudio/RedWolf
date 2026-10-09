@@ -138,13 +138,19 @@ func (p *Provisioner) InitiateDeployment(ctx context.Context, cfg domain.Deploym
 		}
 	}
 
-	// Resolve Cloud-Init template if specified
-	if cfg.TemplateID != "" && cfg.CustomUserData == "" && p.templates != nil {
-		if tpl, err := p.templates.GetTemplate(ctx, cfg.TemplateID); err == nil {
+	// Resolve Cloud-Init template if specified or fallback to default
+	if cfg.CustomUserData == "" && p.templates != nil {
+		templateID := cfg.TemplateID
+		if templateID == "" {
+			templateID = "tpl-base-minimal"
+		}
+		if tpl, err := p.templates.GetTemplate(ctx, templateID); err == nil {
 			cfg.CustomUserData = tpl.UserData
-			slog.InfoContext(ctx, "applied cloud-init template to deployment", "node_id", cfg.NodeID, "template_id", cfg.TemplateID, "template_name", tpl.Name)
-		} else {
-			slog.WarnContext(ctx, "referenced template could not be loaded; using default configuration", "template_id", cfg.TemplateID, "error", err)
+			slog.InfoContext(ctx, "applied cloud-init template to deployment", "node_id", cfg.NodeID, "template_id", templateID, "template_name", tpl.Name)
+		} else if templateID != "tpl-base-minimal" {
+			if defTpl, defErr := p.templates.GetTemplate(ctx, "tpl-base-minimal"); defErr == nil {
+				cfg.CustomUserData = defTpl.UserData
+			}
 		}
 	}
 

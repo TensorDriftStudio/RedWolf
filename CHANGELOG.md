@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.5] - 2026-10-09 (Software RAID, LVM Volume Architecture & Cloud-Init Resilience Release)
+
+### Fixed
+- **Multi-Disk Software RAID (`mdadm`) & LVM Integration:**
+  - Resolved silent fallback in `SetupStorageArchitecture` that previously defaulted to single-disk streaming when `mdadm --create` failed due to missing kernel drivers or interactive confirmation prompts.
+  - Added Linux RAID kernel modules (`md_mod`, `raid0`, `raid1`, `raid10`, `linear`) to Alpine discovery initramfs (`scripts/init.sh`) and runtime execution pre-loader.
+  - Added robust partition settling and device node polling (`settlePartitions`, `waitForDevice`) to ensure partition nodes exist prior to array assembly.
+  - Enabled combined Software RAID + LVM topology: mirroring `/boot` across member disks via `/dev/md0` (using `--metadata=1.0` for bootloader compatibility) and housing LVM Volume Group `vg_system` on `/dev/md1` (using `--metadata=1.2`).
+  - Added non-interactive execution flags (`--batch --force --run`) and pre-wiped member partition superblocks.
+- **LVM Subvolume Mounts & `/etc/fstab` Generation:**
+  - Corrected duplicate volume prefix generation in `generateLVMFstab` which previously formatted sub-mount paths as `/dev/mapper/vg_system-vg_system-home` instead of `/dev/mapper/vg_system-home`.
+  - Added `canonicalMapperDev` to ensure valid canonical `/dev/mapper/<vg>-<lv>` paths for all logical volumes (`/`, `/home`, `/var`, and swap).
+  - Reconfigured kernel boot options in `/boot/loader/entries/*.conf` and `grub.cfg` to include `rd.lvm.lv=vg_system/root` and `rd.md=1` for bootloader resolution.
+- **Cloud-Init NoCloud Datasource & `/etc/redwolf-release` Reliability:**
+  - Added direct offline injection of `/etc/redwolf-release` in `DirectInjectSecurityCredentials`, guaranteeing immediate presence upon filesystem provisioning.
+  - Injected `/etc/cloud/cloud.cfg.d/99-redwolf.cfg` with `datasource_list: [ NoCloud, None ]` to ensure `ds-identify` enables NoCloud across AlmaLinux and Debian cloud images.
+  - Replicated NoCloud seed files to both `/var/lib/cloud/seed/nocloud` and `/var/lib/cloud/seed/nocloud-net`.
+  - Cleared stale distro image metadata (`/var/lib/cloud/instances`, `/var/lib/cloud/instance`, `/var/lib/cloud/data`) and disabled triggers (`cloud-init.disabled`) to ensure fresh first-boot initialization.
+  - Preserved LVM preset in `ProvisioningWizard.tsx` when multi-disk RAID mode is selected.
+
+---
+
 ## [1.2.4] - 2026-10-04 (Storage Autodetection & SELinux Relabeling Release)
 
 ### Fixed
