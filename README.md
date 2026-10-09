@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.5%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.2.6%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.2.5` — Immutable release version
+  * `wolverandover/redwolf:1.2.6` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,12 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.2.5 — Software RAID, LVM Volume Architecture & Cloud-Init Resilience Release (Current)
+### ✅ Version 1.2.6 — GPT Partitioning Resilience & Asset Auto-Sync Release (Current)
+- [x] **Alpine Discovery RAMdisk GPT Utilities:** Added missing standalone `sgdisk` package to discovery builder and appliance container.
+- [x] **Defensive Partitioning Fallback:** Added automatic `parted` GPT fallback mechanism in `storage_layout.go` for multi-disk RAID and LVM.
+- [x] **Automatic Asset Synchronization:** Enhanced `entrypoint.sh` to automatically detect version transitions and pull matching discovery RAMdisk assets.
+
+### ✅ Version 1.2.5 — Software RAID, LVM Volume Architecture & Cloud-Init Resilience Release
 - [x] **Multi-Disk Software RAID (`mdadm`):** Added RAID modules to initramfs, partition settling, and unified Software RAID + LVM layout.
 - [x] **LVM Subvolume Mounts & Bootloader:** Fixed `/etc/fstab` `/dev/mapper` path generation and BLS/GRUB `rd.lvm.lv` kernel parameters.
 - [x] **Cloud-Init Resilience:** Offline `/etc/redwolf-release` injection and dual NoCloud seed paths (`nocloud` & `nocloud-net`).

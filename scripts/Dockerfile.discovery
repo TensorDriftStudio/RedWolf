@@ -28,6 +28,7 @@ RUN apk update && apk add --no-cache \
     util-linux \
     ipmitool \
     gptfdisk \
+    sgdisk \
     parted \
     dosfstools \
     efibootmgr \

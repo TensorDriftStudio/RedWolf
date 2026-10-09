@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.6] - 2026-10-10 (GPT Partitioning Resilience & Discovery Asset Auto-Sync Release)
+
+### Fixed
+- **Alpine Discovery RAMdisk Partitioning Tooling (`sgdisk`):**
+  - Added standalone `sgdisk` package to `scripts/Dockerfile.discovery` and appliance `Dockerfile`. In Alpine Linux, `gptfdisk` only packages `gdisk`/`cgdisk`, whereas `sgdisk` requires its own package.
+  - Resolved `exec: "sgdisk": executable file not found in $PATH` error during multi-disk software RAID and LVM disk partitioning.
+- **Defensive GPT Partitioning Fallback:**
+  - Added dynamic fallback to `parted` in `storage_layout.go` for both Software RAID and LVM partitioning pipelines if `sgdisk` fails or encounters unexpected drive geometry.
+  - Aborted layout setup with explicit actionable diagnostics instead of silently proceeding with unpartitioned drives.
+- **Automated Discovery Asset Synchronization:**
+  - Updated `docker/entrypoint.sh` to track active version tag via `.version` file, automatically downloading matching discovery RAMdisk assets upon version updates.
+
+---
+
 ## [1.2.5] - 2026-10-09 (Software RAID, LVM Volume Architecture & Cloud-Init Resilience Release)
 
 ### Fixed

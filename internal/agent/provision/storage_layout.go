@@ -134,7 +134,19 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			realDisk,
 		)
 		if out, err := partCmd.CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "sgdisk partition warning on raid drive", "drive", realDisk, "error", err, "output", string(out))
+			slog.WarnContext(ctx, "sgdisk partition warning on raid drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
+			_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
+			partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
+				"mkpart", "ESP", "fat32", "1MiB", "1025MiB",
+				"set", "1", "esp", "on",
+				"mkpart", "boot", "ext4", "1025MiB", "2049MiB",
+				"set", "2", "raid", "on",
+				"mkpart", "data", "ext4", "2049MiB", "100%",
+				"set", "3", "raid", "on",
+			)
+			if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
+				return nil, fmt.Errorf("failed creating GPT partitions on RAID drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
+			}
 		}
 
 		settlePartitions(ctx, realDisk)
@@ -312,7 +324,18 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		realDisk,
 	)
 	if out, err := partCmd.CombinedOutput(); err != nil {
-		slog.WarnContext(ctx, "sgdisk partition warning on lvm drive", "drive", realDisk, "error", err, "output", string(out))
+		slog.WarnContext(ctx, "sgdisk partition warning on lvm drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
+		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
+		partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
+			"mkpart", "ESP", "fat32", "1MiB", "513MiB",
+			"set", "1", "esp", "on",
+			"mkpart", "boot", "ext4", "513MiB", "1537MiB",
+			"mkpart", "lvm", "1537MiB", "100%",
+			"set", "3", "lvm", "on",
+		)
+		if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
+			return nil, fmt.Errorf("failed creating GPT partitions on LVM drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
+		}
 	}
 
 	settlePartitions(ctx, realDisk)

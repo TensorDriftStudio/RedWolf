@@ -31,7 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isCollapsed,
   onToggleCollapse,
 }) => {
-  const [version, setVersion] = useState<string>('1.2.5');
+  const [version, setVersion] = useState<string>('1.2.6');
 
   useEffect(() => {
     fetch('/api/version')

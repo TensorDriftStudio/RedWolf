@@ -24,18 +24,29 @@ if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/asse
     cp -f -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
 fi
 
-# Automatic Fallback: If discovery assets are missing, download official prebuilt release artifacts
-if [ ! -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ] || [ ! -f "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" ]; then
-    echo "🌐 Discovery RAMdisk missing in $REDWOLF_IMAGE_DIR/discovery."
-    echo "📦 Attempting automatic download of prebuilt discovery assets from GitHub Releases..."
+# Automatic Discovery Assets Synchronization: Download or update official prebuilt release artifacts
+RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.6}"
+CURRENT_DISCOVERY_VER=""
+[ -f "$REDWOLF_IMAGE_DIR/discovery/.version" ] && CURRENT_DISCOVERY_VER="$(cat "$REDWOLF_IMAGE_DIR/discovery/.version" 2>/dev/null || true)"
+
+if [ ! -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ] || [ ! -f "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" ] || [ "$CURRENT_DISCOVERY_VER" != "$RELEASE_TAG" ]; then
+    echo "🌐 Discovery RAMdisk missing or outdated (current: '${CURRENT_DISCOVERY_VER:-none}', target: '$RELEASE_TAG')."
+    echo "📦 Synchronizing discovery assets from GitHub Releases (${RELEASE_TAG})..."
     mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
-    RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.5}"
     RELEASE_BASE_URL="https://github.com/TensorDriftStudio/RedWolf/releases/download/${RELEASE_TAG}"
-    if curl -f -sSL "${RELEASE_BASE_URL}/initramfs.img" -o "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" 2>/dev/null && \
-       curl -f -sSL "${RELEASE_BASE_URL}/vmlinuz" -o "$REDWOLF_IMAGE_DIR/discovery/vmlinuz" 2>/dev/null; then
-        echo "✅ Prebuilt discovery assets successfully downloaded from GitHub Releases."
+    if curl -f -sSL "${RELEASE_BASE_URL}/initramfs.img" -o "$REDWOLF_IMAGE_DIR/discovery/initramfs.img.tmp" 2>/dev/null && \
+       curl -f -sSL "${RELEASE_BASE_URL}/vmlinuz" -o "$REDWOLF_IMAGE_DIR/discovery/vmlinuz.tmp" 2>/dev/null; then
+        mv -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img.tmp" "$REDWOLF_IMAGE_DIR/discovery/initramfs.img"
+        mv -f "$REDWOLF_IMAGE_DIR/discovery/vmlinuz.tmp" "$REDWOLF_IMAGE_DIR/discovery/vmlinuz"
+        echo "$RELEASE_TAG" > "$REDWOLF_IMAGE_DIR/discovery/.version"
+        echo "✅ Prebuilt discovery assets successfully synchronized to ${RELEASE_TAG}."
     else
-        echo "⚠️  Discovery assets not found locally or on CDN. Build locally using ./scripts/build-discovery-ramfs.sh if needed."
+        rm -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img.tmp" "$REDWOLF_IMAGE_DIR/discovery/vmlinuz.tmp"
+        if [ -f "$REDWOLF_IMAGE_DIR/discovery/initramfs.img" ]; then
+            echo "⚠️  Failed downloading ${RELEASE_TAG} discovery assets. Falling back to existing assets in $REDWOLF_IMAGE_DIR/discovery."
+        else
+            echo "⚠️  Discovery assets not found locally or on CDN. Build locally using ./scripts/build-discovery-ramfs.sh if needed."
+        fi
     fi
 fi
 

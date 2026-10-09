@@ -24,7 +24,7 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-ARG VERSION=v1.2.5
+ARG VERSION=v1.2.6
 ARG GIT_COMMIT=release
 ARG BUILD_DATE=""
 
@@ -55,6 +55,7 @@ RUN apk add --no-cache \
     curl \
     zstd \
     gptfdisk \
+    sgdisk \
     qemu-img
 
 # Prepare application and runtime data paths
