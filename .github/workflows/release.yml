@@ -149,3 +149,13 @@ jobs:
               docker push "$tag"
             fi
           done <<< "${{ steps.tags.outputs.tags }}"
+
+      - name: Update Docker Hub Description
+        if: env.DOCKERHUB_TOKEN != ''
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_USERNAME }}/redwolf
+          readme-filepath: ./DOCKERHUB.md
+          short-description: "Multi-vendor bare-metal and VM zero-touch provisioning appliance"

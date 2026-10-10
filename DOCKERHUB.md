@@ -24,6 +24,7 @@ This official Docker image provides the complete, pre-packaged RedWolf appliance
   * **Standard Partitioning:** Auto-expanding GPT root partition with online filesystem expansion (`xfs_growfs` / `resize2fs`).
   * **LVM Engine:** Volume Group and Logical Volume allocation (`/`, `/var`, `/home`, `/tmp`, `swap`) with dynamic UI auto-fit.
   * **Software RAID (`mdadm`):** Automated RAID 0, 1, 5, 10 array creation with dual `mdadm.conf` sync and redundant EFI bootloader replication.
+  * **Air-Gapped & Offline Storage Assembly:** Natively injects LVM and MDADM userspace tools, Dracut modules, and initramfs hooks without requiring internet access.
   * **Safety First:** Drives are addressed via immutable symlinks (`/dev/disk/by-id/...`), eliminating blind `/dev/sda` corruption.
 * **Cloud-Init Streaming:** Direct raw cloud image deployment (`.raw.zstd`) with NoCloud seed injection and MAC-matched network definitions.
 * **Modern OS Catalog:** Out-of-the-box support for AlmaLinux 9/10 LTS, Debian 12/13 LTS, and Ubuntu 22.04/24.04 LTS.
@@ -155,7 +156,7 @@ When using `--network host`, the following ports are serviced directly on the ho
 ## 🏷️ Image Tags
 
 * `wolverandover/redwolf:latest` — Tracks the latest stable release.
-* `wolverandover/redwolf:1.3.8` — Specific immutable release version.
+* `wolverandover/redwolf:1.3.9` — Specific immutable release version.
 
 ---
 
