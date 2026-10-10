@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.9] - 2026-10-10 (Offline LVM & Software RAID Auto-Assembly Release)
+
+### Added
+- **Offline LVM & MDADM Userspace Tool Injection (`offline_storage.go`):**
+  - Guaranteed presence of `lvm` and `mdadm` binaries in target root filesystems without requiring internet access or upstream mirror connectivity.
+  - Automatically injects executable binaries and dynamic runtime dependencies (ELF loader and libraries) from the discovery host environment into target `/usr/sbin` and `/sbin`.
+  - Automatically provisions all standard LVM volume management symlinks (`vgscan`, `vgchange`, `vgs`, `lvscan`, `lvchange`, `lvs`, `pvscan`, `pvs`, etc.).
+- **Bulletproof Dracut Offline Storage Modules (`offline_storage.go` & `executor.go`):**
+  - Configured `/etc/dracut.conf.d/99-redwolf-storage.conf` to explicitly include `lvm` and `mdraid` modules along with enterprise storage drivers (`dm_mod`, `raid1`, `raid0`, `raid10`, `nvme`).
+  - Implemented standalone fallback Dracut module `/usr/lib/dracut/modules.d/90redwolf-storage/` with early boot cmdline and pre-mount auto-assembly hooks.
+  - Ensured `--add "lvm mdraid"` is never dropped when LVM or Software RAID is required by the operator's storage layout.
+- **Debian / Ubuntu `initramfs-tools` Early Storage Assembly Hooks:**
+  - Automated injection of `/etc/initramfs-tools/hooks/redwolf-storage` and `/etc/initramfs-tools/scripts/local-top/redwolf-storage`.
+  - Ensures `/sbin/mdadm --assemble --scan --auto=yes` and `/sbin/lvm vgchange -ay` execute at `local-top` stage before root filesystem mount.
+- **Universal Systemd Early Storage Auto-Activation:**
+  - Added `/etc/systemd/system/redwolf-storage-init.service` enabled under `local-fs-pre.target.wants`, guaranteeing active volume groups and arrays in userspace even on minimal or customized cloud images.
+
+### Fixed
+- **Air-Gapped LVM & Software RAID Boot Failures:**
+  - Resolved system boot failures where nodes hung or dropped to emergency shells (`dracut-initqueue timeout: /dev/mapper/vg_system-root does not exist`) when installed without an active internet connection.
+  - Passed both `layout.IsSoftwareRAID` and `layout.IsLVM` parameters to `tryRebuildInitramfs`, eliminating cases where LVM was ignored on single-disk or hybrid storage arrays.
+
 ## [1.3.8] - 2026-10-10 (LVM Binary Verification & Offline DNF Fast-Fail Release)
 
 ### Fixed

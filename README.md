@@ -423,7 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.8 — LVM Binary Verification & Offline DNF Fast-Fail (Current)
+### ✅ Version 1.3.9 — Offline LVM & Software RAID Auto-Assembly (Current)
+- [x] **Offline LVM & MDADM Tool Injection:** Guaranteed presence of `lvm` and `mdadm` binaries, runtime dependencies, and all LVM symlinks (`vgchange`, `lvscan`, `pvcreate`, etc.) in target filesystems without requiring internet connectivity.
+- [x] **Bulletproof Dracut Offline Storage Modules:** Injected `/etc/dracut.conf.d/99-redwolf-storage.conf` and standalone `/usr/lib/dracut/modules.d/90redwolf-storage/` fallback modules to prevent drop-to-shell errors during air-gapped deployments.
+- [x] **Debian / Ubuntu `initramfs-tools` Early Storage Assembly:** Added `/etc/initramfs-tools/hooks/redwolf-storage` and `scripts/local-top/redwolf-storage` executing `mdadm --assemble` and `lvm vgchange -ay` before root mount.
+- [x] **Universal Systemd Storage Auto-Activation:** Enabled `/etc/systemd/system/redwolf-storage-init.service` before `local-fs-pre.target` for seamless boot across all distributions.
+
+### ✅ Version 1.3.8 — LVM Binary Verification & Offline DNF Fast-Fail
 - [x] **LVM Binary Pre-Requisite Verification:** Verified presence of `/usr/sbin/lvm` or `/sbin/lvm` before adding `"lvm"` to Dracut `--add` modules, eliminating `dracut module 'lvm' cannot be found or installed` errors on minimal cloud images.
 - [x] **Fast-Fail Network Timeouts:** Enforced 5s timeout on `dnf`/`microdnf` with connection timeouts to prevent delays on air-gapped homelabs and isolated provisioning networks.
 - [x] **Target Image Rebuild Reliability:** Explicitly targeted destination `/boot/initramfs-*.img` across all fallback rebuilding tiers.

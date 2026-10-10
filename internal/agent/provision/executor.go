@@ -286,7 +286,7 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 
 	if layout.IsSoftwareRAID || layout.IsLVM {
 		_ = reporter.Report(ctx, nodeID, 87, "Regenerating initramfs...", "Building initramfs with storage and RAID drivers")
-		if err := tryRebuildInitramfs(ctx, targetRootMount, layout.IsSoftwareRAID); err != nil {
+		if err := tryRebuildInitramfs(ctx, targetRootMount, layout.IsSoftwareRAID, layout.IsLVM); err != nil {
 			return fmt.Errorf("initramfs rebuild failed: %w", err)
 		}
 	}
@@ -773,19 +773,31 @@ func ConfigureTargetLVM(targetRootMount string) error {
 
 // tryRebuildInitramfs regenerates the initramfs inside target chroot to ensure
 // mdraid, lvm, and filesystem drivers are natively baked into the boot image.
-func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftwareRAID ...bool) error {
+func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftwareRAID bool, isLVM ...bool) error {
 	bootDir := filepath.Join(targetRootMount, "boot")
 	kInfo, err := FindInstalledKernel(bootDir)
 	if err != nil {
 		return fmt.Errorf("kernel not found in /boot for initramfs rebuild: %w", err)
 	}
 
-	slog.InfoContext(ctx, "regenerating initramfs inside target chroot", "kernel_version", kInfo.KernelVersion)
+	lvmRequired := len(isLVM) > 0 && isLVM[0]
+	raidRequired := isSoftwareRAID
+
+	slog.InfoContext(ctx, "regenerating initramfs inside target chroot",
+		"kernel_version", kInfo.KernelVersion,
+		"software_raid", raidRequired,
+		"lvm", lvmRequired,
+	)
 
 	hasExistingInitrd := false
 	initrdPath := filepath.Join(targetRootMount, "boot", kInfo.InitrdFile)
 	if fi, sErr := os.Stat(initrdPath); sErr == nil && fi.Size() > 1024*1024 {
 		hasExistingInitrd = true
+	}
+
+	// Guarantee offline storage tools, dracut modules, and initramfs hooks are present
+	if err := EnsureOfflineStorageTools(ctx, targetRootMount, raidRequired, lvmRequired); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning ensuring offline storage tools before initramfs rebuild", "error", err)
 	}
 
 	// Provide DNS resolution in chroot
@@ -807,14 +819,12 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		}
 	}()
 
-	raidRequired := len(isSoftwareRAID) > 0 && isSoftwareRAID[0]
-
-	// Dracut (AlmaLinux / RHEL / CentOS / Fedora)
+	// Dracut (AlmaLinux / RHEL / CentOS / Fedora / Rocky)
 	dracutPath := filepath.Join(targetRootMount, "usr", "bin", "dracut")
 	if _, err := os.Stat(dracutPath); err == nil {
 		hasMdadm := false
 		for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-			if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+			if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
 				hasMdadm = true
 				break
 			}
@@ -830,9 +840,8 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 					break
 				}
 			}
-			// Re-verify mdadm binary
 			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
 					hasMdadm = true
 					break
 				}
@@ -841,24 +850,46 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 
 		hasLVM := false
 		for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
-			if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+			if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
 				hasLVM = true
 				break
 			}
 		}
 
-		// Dynamically discover supported dracut modules (only when matching userspace binaries exist)
+		if lvmRequired && !hasLVM {
+			slog.InfoContext(ctx, "lvm not found in chroot; attempting package manager installation for LVM support")
+			for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
+					dnfCtx, dnfCancel := context.WithTimeout(ctx, 5*time.Second)
+					_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "--setopt=timeout=5", "--setopt=connect_timeout=5", "lvm2").Run()
+					dnfCancel()
+					break
+				}
+			}
+			for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
+				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
+					hasLVM = true
+					break
+				}
+			}
+		}
+
+		// Dynamically discover supported dracut modules
 		var addModules []string
-		if hasLVM {
+		if hasLVM || lvmRequired {
 			if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90lvm")); sErr == nil {
 				addModules = append(addModules, "lvm")
 			}
 		}
 
-		if raidRequired && hasMdadm {
+		if hasMdadm || raidRequired {
 			if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90mdraid")); sErr == nil {
 				addModules = append(addModules, "mdraid")
 			}
+		}
+
+		if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90redwolf-storage")); sErr == nil {
+			addModules = append(addModules, "redwolf-storage")
 		}
 
 		targetImg := filepath.Join("/boot", kInfo.InitrdFile)
@@ -869,7 +900,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		if len(addModules) > 0 {
 			args = append(args, "--add", strings.Join(addModules, " "))
 		}
-		args = append(args, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+		args = append(args, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod dm-mod")
 
 		cmdArgs := append([]string{targetRootMount, "dracut"}, args...)
 		cmd := exec.CommandContext(ctx, "chroot", cmdArgs...)
@@ -886,7 +917,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		if len(addModules) > 0 {
 			kverArgs = append(kverArgs, "--add", strings.Join(addModules, " "))
 		}
-		kverArgs = append(kverArgs, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+		kverArgs = append(kverArgs, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod dm-mod")
 
 		kverCmdArgs := append([]string{targetRootMount, "dracut"}, kverArgs...)
 		cmd = exec.CommandContext(ctx, "chroot", kverCmdArgs...)
@@ -896,17 +927,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			return nil
 		}
 
-		// 3. Retry without --add (storage and raid drivers only)
-		slog.WarnContext(ctx, "dracut regeneration with modules returned warning; retrying with storage drivers only", "output", string(out), "error", err)
-		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", targetImg, kInfo.KernelVersion,
-			"--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
-		out, err = cmd.CombinedOutput()
-		if err == nil {
-			slog.InfoContext(ctx, "successfully regenerated dracut initramfs with storage drivers inside chroot", "target_img", targetImg, "kernel_version", kInfo.KernelVersion)
-			return nil
-		}
-
-		// 4. Fallback to existing valid initramfs if available
+		// 3. Fallback to existing valid initramfs if available
 		if hasExistingInitrd {
 			slog.WarnContext(ctx, "dracut regeneration in chroot failed, but existing valid initramfs present in /boot; continuing deployment with stock initramfs",
 				"output", string(out),
@@ -925,7 +946,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		if raidRequired {
 			hasMdadm := false
 			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
 					hasMdadm = true
 					break
 				}
@@ -939,10 +960,27 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			}
 		}
 
+		if lvmRequired {
+			hasLVM := false
+			for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
+				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
+					hasLVM = true
+					break
+				}
+			}
+			if !hasLVM {
+				slog.InfoContext(ctx, "lvm not found in chroot; attempting apt-get installation for LVM support")
+				aptCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "update", "-qq")
+				_ = aptCmd.Run()
+				aptInstallCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "install", "-y", "-qq", "--no-install-recommends", "lvm2")
+				_ = aptInstallCmd.Run()
+			}
+		}
+
 		modulesFile := filepath.Join(targetRootMount, "etc", "initramfs-tools", "modules")
 		if modData, err := os.ReadFile(modulesFile); err == nil {
 			content := string(modData)
-			for _, mod := range []string{"nvme", "megaraid_sas", "mpt3sas", "smartpqi", "ahci", "sd_mod", "raid0", "raid1", "raid10", "dm-mod"} {
+			for _, mod := range []string{"nvme", "megaraid_sas", "mpt3sas", "smartpqi", "ahci", "sd_mod", "raid0", "raid1", "raid10", "dm-mod", "dm_mod"} {
 				if !strings.Contains(content, mod) {
 					content += "\n" + mod
 				}

@@ -41,6 +41,8 @@ RUN apk update && apk add --no-cache \
     xfsprogs \
     mdadm \
     lvm2 \
+    lvm2-static \
+    lvm2-extra \
     ca-certificates \
     curl \
     zstd \
