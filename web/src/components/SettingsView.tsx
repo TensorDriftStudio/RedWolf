@@ -2068,8 +2068,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
               >
                 <option value="AlmaLinux 9">AlmaLinux 9 (Recommended - Current Enterprise)</option>
-                <option value="AlmaLinux 8">AlmaLinux 8 (Legacy Enterprise)</option>
+                <option value="Ubuntu 24.04 LTS">Ubuntu 24.04 LTS (Noble Enterprise)</option>
+                <option value="Ubuntu 22.04 LTS">Ubuntu 22.04 LTS (Jammy Enterprise)</option>
                 <option value="Debian 12">Debian 12 (Bookworm LTS)</option>
+                <option value="AlmaLinux 8">AlmaLinux 8 (Legacy Enterprise)</option>
                 <option value="AlmaLinux 10">AlmaLinux 10 (Enterprise LTS)</option>
                 <option value="Debian 13">Debian 13 (Trixie LTS)</option>
               </select>
@@ -2355,6 +2357,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         className="w-full bg-slate-950 border border-slate-700 rounded-sm px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-red-600"
                       >
                         <option value="All">All Supported Distributions</option>
+                        <option value="Ubuntu 24.04 LTS">Ubuntu 24.04 LTS</option>
+                        <option value="Ubuntu 22.04 LTS">Ubuntu 22.04 LTS</option>
                         <option value="AlmaLinux 10">AlmaLinux 10</option>
                         <option value="AlmaLinux 9">AlmaLinux 9</option>
                         <option value="AlmaLinux 8">AlmaLinux 8</option>

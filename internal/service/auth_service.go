@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/tensordriftstudio/redwolf/internal/adapter/auth"
 	"github.com/tensordriftstudio/redwolf/internal/domain"
@@ -46,21 +45,8 @@ func (s *AuthService) Login(ctx context.Context, req domain.LoginRequest) (*doma
 				return nil, domain.ErrInvalidCredentials
 			}
 		} else {
-			// Emergency fallback for unconfigured environments
-			if req.Username == "admin" && (req.Password == "admin123" || req.Password == "redwolf123" || req.Password == "admin") {
-				user = &domain.User{
-					ID:          "usr-local-admin",
-					Username:    "admin",
-					DisplayName: "System Administrator",
-					Email:       "admin@redwolf.internal",
-					Role:        domain.RoleAdmin,
-					Source:      domain.AuthSourceLocal,
-					CreatedAt:   time.Now().UTC(),
-					LastLoginAt: time.Now().UTC(),
-				}
-			} else {
-				return nil, domain.ErrInvalidCredentials
-			}
+			slog.ErrorContext(ctx, "user service is not configured; local authentication unavailable")
+			return nil, fmt.Errorf("local authentication service is unavailable")
 		}
 
 	case domain.AuthSourceDirectory:

@@ -3,6 +3,7 @@ package ipmi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
@@ -118,7 +119,9 @@ func (c *RemoteController) UpdateCredentials(ctx context.Context, bmc domain.BMC
 		nameArgs := append([]string{}, args...)
 		nameArgs = append(nameArgs, "user", "set", "name", fmt.Sprintf("%d", slot), newUsername)
 		cmd := exec.CommandContext(ctx, "ipmitool", nameArgs...)
-		_, _ = cmd.CombinedOutput()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			slog.DebugContext(ctx, "ipmitool user set name non-fatal warning", "slot", slot, "output", string(out), "error", err)
+		}
 	}
 
 	// Step 2: Set user password (strictly 14-16 characters)
@@ -133,7 +136,9 @@ func (c *RemoteController) UpdateCredentials(ctx context.Context, bmc domain.BMC
 	enableArgs := append([]string{}, args...)
 	enableArgs = append(enableArgs, "user", "enable", fmt.Sprintf("%d", slot))
 	cmdEnable := exec.CommandContext(ctx, "ipmitool", enableArgs...)
-	_ = cmdEnable.Run()
+	if out, err := cmdEnable.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "ipmitool user enable warning", "slot", slot, "output", string(out), "error", err)
+	}
 
 	// Step 4: Grant administrator privilege on LAN channel
 	channel := bmc.Channel
@@ -143,7 +148,9 @@ func (c *RemoteController) UpdateCredentials(ctx context.Context, bmc domain.BMC
 	privArgs := append([]string{}, args...)
 	privArgs = append(privArgs, "channel", "setaccess", fmt.Sprintf("%d", channel), fmt.Sprintf("%d", slot), "callin=on", "ipmi=on", "link=on", "privilege=4")
 	cmdPriv := exec.CommandContext(ctx, "ipmitool", privArgs...)
-	_ = cmdPriv.Run()
+	if out, err := cmdPriv.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "ipmitool channel setaccess privilege warning", "channel", channel, "slot", slot, "output", string(out), "error", err)
+	}
 
 	return nil
 }

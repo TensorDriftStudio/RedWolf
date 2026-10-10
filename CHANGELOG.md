@@ -7,14 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.3.4] - 2026-10-10 (Embedded Asset Sync & Plymouth Suppression Release)
+## [1.3.6] - 2026-10-10 (Enterprise Bare-Metal Provisioning Hardening & Hardware Bulletproofing)
+
+### Added
+- **Fail-Fast Initramfs Verification & Chroot Networking (`executor.go`):**
+  - Updated `tryRebuildInitramfs` to return explicit errors and fail fast if `dracut` or `update-initramfs` fails to inject required storage drivers.
+  - Automatically bound `/etc/resolv.conf` into chroot to provide DNS resolution during target filesystem customization.
+  - Added proactive check and automatic installation for `mdadm` inside Debian/Ubuntu chroot on Software RAID deployments, preventing boot drops to BusyBox emergency shells.
+- **Strict Cloud-Init YAML & Schema Pre-Flight Validation (`deployment.go`):**
+  - Integrated `gopkg.in/yaml.v3` parser validating `CustomUserData` and `CustomNetworkConfig` during pre-flight checks, rejecting malformed configurations before disk modification.
+  - Added domain sentinel errors `ErrInvalidYAMLConfig`, `ErrInsufficientStorage`, and `ErrBootloaderFailed`.
+- **Target Firmware Mode Invariants (`deployment.go` & `bootloader.go`):**
+  - Added explicit `FirmwareMode` (`uefi`, `bios`, `auto`) to `domain.DeploymentConfig`.
+  - Added fail-fast error reporting in `InstallBIOSBootloader` if BIOS MBR bootloader cannot be installed when BIOS mode is requested.
+  - Added unique NVRAM labels per RAID member disk (`RedWolf (<OS>) - Disk <Index>`) to prevent Dell and Supermicro UEFI BIOSes from ignoring or overwriting duplicate entries.
 
 ### Fixed
+- **Deterministic LVM Volume Allocation (`storage_layout.go`):**
+  - Eliminated silent arbitrary scaling down of requested logical volume sizes (`scale`), immediately rejecting oversized requests with `ErrInsufficientStorage`.
+  - Enforced that fixed-size logical volumes are created first, followed by the dynamic `+100%FREE` volume.
+  - Replaced arbitrary 2GB fallback volume creation with explicit error returns.
+- **Race Condition Elimination & Device Settle Consolidation (`gpt.go`, `storage_layout.go`, `cloudinit.go`):**
+  - Consolidated redundant `partprobe`, `blockdev --rereadpt`, and `mdev -s` calls across `gpt.go` and `cloudinit.go` into the unified `settlePartitions` helper.
+  - Replaced arbitrary `time.Sleep` loops in `waitForDevice` with clean polling and `udevadm settle --timeout=10`.
+- **Extended Attributes Preservation (`executor.go`):**
+  - Updated root filesystem synchronization in `extractImageToTarget` to use `cp -a --preserve=all` with fallback to `cp -a`, preserving SELinux contexts and file capabilities.
+
+## [1.3.5] - 2026-10-10 (Custom Cloud-Init & Storage Architecture Bulletproofing Release)
+
+### Added
+- **Custom Cloud-Init YAML Preservation & Safe Key Injection (`cloudinit.go`):**
+  - Added intelligent top-level YAML key inspection (`hasTopLevelYAMLKey`) preventing duplicate mapping keys (`users:`, `write_files:`, `chpasswd:`, `packages:`) when operator provides custom user-data.
+  - Operator-defined custom users and configurations are strictly preserved without being overwritten, while direct credentials remain deterministically injected via `/etc/shadow` and `/root/.ssh/authorized_keys`.
+  - Added native LACP 802.3ad bonding (`bond0`) and 802.1Q VLAN tagging (`vlan<ID>`) generation in Netplan version 2 network configuration.
+  - Added `CustomNetworkConfig` support in `domain.DeploymentConfig` for fully customizable network topologies.
+  - Conditioned `growpart` execution in Cloud-Init: active on standard partitioned disks, suppressed on LVM and Software RAID to eliminate device-mapper errors during boot.
+
+### Fixed
+- **LVM Custom Volume Sizing & Dynamic Kernel Argument Resolution (`storage_layout.go` & `bootloader.go`):**
+  - Fixed `vgs` free space parsing by querying in megabytes (`--units m --nosuffix`) and stripping `<>` and whitespace, preventing locale/formatting errors from triggering false scale-downs to 1 GB.
+  - Added pre-wiping of existing filesystem and RAID signatures using `wipefs -a -f` before `pvcreate` and partition initialization.
+  - Dynamically resolved LVM volume group and root volume names in `ComputeKernelArgs`, allowing operators to customize root volume names without kernel panics.
+  - Sorted LVM submounts by directory depth ascending before mounting target filesystem, guaranteeing parent directories (e.g. `/var`) mount before nested subdirectories (e.g. `/var/log`).
+- **Software RAID Array Discovery & Node Resolution (`storage_layout.go`):**
+  - Added cleanup for all potential mdraid array aliases (`/dev/md127`, `/dev/md126`, `/dev/md/0`, `/dev/md/1`) before array creation.
+  - Added `ensureMDDeviceNode` to resolve and symlink alternate device nodes created by udev or devtmpfs.
+  - Enhanced `getMDArrayUUID` to parse both `mdadm --export` and `--detail` formats, trimming quotes and whitespace.
+- **Universal BIOS & UEFI Dual-Boot Parity (`bootloader.go` & `executor.go`):**
+  - Enhanced GRUB direct menuentry with intelligent dual-path kernel detection (`if [ -f /boot/... ] ... else ...`), guaranteeing instant zero-click boot on both dedicated `/boot` partitions and single-partition layouts.
+  - Mounted `efivarfs` before `efibootmgr` execution to ensure NVRAM variable access succeeds in minimal initramfs environments.
+  - Added `/dev/pts` bind mounting during chroot `grub-install` to prevent pseudo-terminal errors.
+  - Safeguarded Debian/Ubuntu root partition detection against matching 1MB BIOS boot partitions.
+
+## [1.3.4] - 2026-10-10 (Embedded Asset Sync & Plymouth Suppression Release)
+
+### Added
+- **First-Class Ubuntu LTS Provisioning Support (Ubuntu 24.04 LTS & 22.04 LTS):**
+  - Added native `OSUbuntu2404` ("Ubuntu 24.04 LTS") and `OSUbuntu2204` ("Ubuntu 22.04 LTS") target distributions to domain models, slug normalizer (`ubuntu-24.04`, `ubuntu24`, `ubuntu-22.04`, `ubuntu22`, `noble`, `jammy`), and image catalog with official Canonical cloud raw URLs.
+  - Added UEFI bootloader registration using native Ubuntu shim loader (`\EFI\ubuntu\shimx64.efi`) and partition 15 ESP detection on raw image loop attachments.
+  - Injected direct Netplan configuration (`/etc/netplan/50-cloud-init.yaml`) alongside Cloud-Init NoCloud seeds for immediate network configuration across Ubuntu LTS bare-metal installations.
+  - Added Ubuntu 24.04 and 22.04 options to frontend Provisioning Wizard and system settings.
+
+### Fixed
+- **Universal BIOS & UEFI Dual-Boot Parity Across All Provisioning Modes (`cloudinit.go` & `bootloader.go`):**
+  - Integrated `InstallBIOSBootloader` and `GenerateUniversalGrubConfig` directly during rootfs mounting in standard deployment, ensuring Tier 1 raw block streaming deploys with full Legacy BIOS MBR boot code and PMBR active flags alongside UEFI NVRAM registration.
+  - Dynamically resolved GRUB root fallback partition (`hd0,gpt%d`) based on actual target partition numbers (`sda1`, `nvme0n1p4`, etc.) rather than hardcoding `hd0,gpt3`.
+  - Added `nofail` flag to `/boot/efi` in `/etc/fstab` to eliminate systemd emergency rescue mode hangs during degraded RAID mirror boots or drive replacement.
+- **LVM & Software RAID Storage Architecture Hardening (`storage_layout.go` & `executor.go`):**
+  - Added proactive `pvremove -y -ff` before LVM volume group creation to prevent stale metadata collisions.
+  - Hardened `vgs` free capacity parser against locale-specific decimal commas and variable whitespace formatting.
+  - Implemented multi-tiered volume creation fallbacks (`+100%FREE`, scaled size, 2G, 1G) ensuring LVs never fail on extent boundary limits.
+  - Added `rd.lvm.lv=vg_system/root` and dual `rd.md.uuid` arguments to `ComputeKernelArgs` for seamless dracut early boot array assembly.
+  - Streamlined `InjectMDADMConfig` to write clean, canonical `mdadm.conf` files without accumulating duplicate array headers.
+- **Codebase Simplification & AI Fluff Removal (`gpt.go`, `bootloader.go`, `cloudinit.go`, `storage_layout.go`):**
+  - Replaced duplicate 150-line partition detection in `gpt.go` with delegation to `findRootPartition`.
+  - Pruned artificial step numbering, duplicate comments, and verbose AI narratives across `disk.go`, `streamer.go`, `cloudinit.go`, `executor.go`, and `storage_layout.go`.
+- **Ubuntu Partition Boundary & Expansion Accuracy (`gpt.go` & `cloudinit.go`):**
+  - Updated `detectRootPartNumber` and `fallbackPartitionPath` to recognize Ubuntu cloud images as Debian-like (root on partition 1 with ext4), preventing expansion logic from erroneously targeting non-existent partition 4.
 - **Deterministic Embedded Discovery Asset Sync (`entrypoint.sh`):**
   - Updated asset copy command from `cp -f -a /usr/share/redwolf/assets/discovery/*` to `cp -f -a /usr/share/redwolf/assets/discovery/.` to ensure dotfiles and `.version` are copied into persistent volume `$REDWOLF_IMAGE_DIR/discovery/`.
+  - Aligned fallback version in `entrypoint.sh` from `v1.3.3` to `v1.3.4` to eliminate redundant GitHub release download attempts on container boot.
   - Guaranteed that the container will never fall back to an outdated cached discovery image or fail with 404 attempting to download from GitHub Releases.
+- **Enterprise Subprocess Context Propagation (`redwolf-discovery` & `provision`):**
+  - Updated `resolveServerURL` in `cmd/redwolf-discovery/main.go` to accept `ctx context.Context` and use `exec.CommandContext(ctx, "ip", ...)`.
+  - Harmonized `DirectInjectSecurityCredentials` and `WriteNoCloudSeeds` across `cloudinit.go`, `executor.go`, and test suites to accept `ctx context.Context` and use structured `slog.InfoContext`.
+- **Authentication Hardening (`auth_service.go`):**
+  - Removed hardcoded emergency fallback passwords (`admin123`, `redwolf123`, `admin`) when `UserService` is unconfigured, eliminating backdoor vectors in enterprise deployments.
+- **Deterministic Process Lifecycle Synchronization (`dnsmasq.Manager`):**
+  - Replaced arbitrary sleep with an exit channel (`exitCh`) in `Manager.Stop` to guarantee child process termination before releasing ports, preventing UDP 67/69 rebind collisions during reload.
+- **Uncompressed Raw Image Buffering Headroom (`executor.go`):**
+  - Increased target disk free space threshold in `selectTempImagePath` from 2 GiB to 4 GiB to avoid `ENOSPC` risks during sparse raw image extraction.
 - **Plymouth Splash Suppression (`plymouth.enable=0`):**
   - Injected `plymouth.enable=0` into `ComputeKernelArgs` to prevent the Plymouth splash engine from seizing the virtual VGA console (`tty0`) or suppressing storage assembly and systemd progress on VMware/KVM screens.
+- **Redfish BMC Connection & Resource Leak Prevention (`redfish.Client`):**
+  - Replaced deferred response body closing inside candidate URI iteration loops with immediate per-iteration closing, eliminating file descriptor leaks across Redfish BMC endpoint probes.
+- **Event Broadcaster Channel Double-Close Protection (`event.Broadcaster`):**
+  - Wrapped subscriber unsubscription routines in `sync.Once`, preventing double-close channel panics during rapid client teardown or concurrent SSE/WebSocket reconnections.
+- **Resilient Unmount Handling with Lazy Fallback (`unmountAllUnder`):**
+  - Added `-l` (lazy unmount) fallback to `unmountAllUnder` when filesystems are marked busy by lingering processes, ensuring clean tear-down of target and `/mnt` hierarchies prior to system reboot.
+- **Defensive Provisioning Log Growth Boundary (`Provisioner.UpdateProgress`):**
+  - Implemented automatic log rotation capping live provisioning logs to the latest 500 lines, preventing unbounded SQLite JSON bloat during extended deployments.
+- **Comprehensive Unit Test Coverage Across Enterprise Adapters:**
+  - Added full test suites for `internal/adapter/redfish` (power querying, actions, credentials), `internal/adapter/ipmi` (parameter building, validations), `internal/adapter/event` (pub/sub, idempotent double unsubscription, slow-consumer drops), `internal/adapter/auth` (session lifecycle & expiration), and `internal/agent/client` (telemetry, task polling, progress reporting).
+- **Sparse Image File Boundary Truncation (`streamer.go`):**
+  - Added explicit `targetDev.Truncate(totalDecompressedBytes)` on regular sparse image targets prior to flush, guaranteeing loop devices attach to the full uncompressed block volume even when raw cloud images end in sparse zero holes.
+- **Race Condition Prevention in dnsmasq Supervisor (`dnsmasq.Manager`):**
+  - Added a secondary state check (`if m.running`) immediately after re-locking mutex post config rendering, eliminating double-process spawn race conditions during concurrent startup invocations.
+- **Structured Context Logging & Error Observability (`ipmi.RemoteController` & `seedTFTPBootloaders`):**
+  - Propagated execution contexts and structured `slog` logging into `seedTFTPBootloaders` and non-fatal `ipmitool` subroutines, replacing blind error discards with informative debug/warn traces.
 
 ## [1.3.3] - 2026-10-10 (Universal VGA Console & Unrestricted Dracut Boot Release)
 

@@ -16,8 +16,14 @@ import (
 	"github.com/tensordriftstudio/redwolf/internal/domain"
 )
 
+// IsEFIFirmware reports whether the system firmware booted under UEFI.
+func IsEFIFirmware() bool {
+	_, err := os.Stat("/sys/firmware/efi")
+	return err == nil
+}
+
 // ConfigureBootloader registers the UEFI bootloader in system NVRAM via efibootmgr.
-func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType domain.OperatingSystem) error {
+func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType domain.OperatingSystem, diskIndex ...int) error {
 	// Resolve symlinks to target real disk block device (e.g. /dev/nvme0n1 or /dev/sda)
 	realDisk, err := filepath.EvalSymlinks(targetDrivePath)
 	if err != nil {
@@ -31,13 +37,16 @@ func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType dom
 	)
 
 	// If system booted in Legacy BIOS mode, NVRAM EFI variables are inaccessible
-	if _, err := os.Stat("/sys/firmware/efi"); os.IsNotExist(err) {
+	if !IsEFIFirmware() {
 		slog.WarnContext(ctx, "system is running in Legacy BIOS mode; EFI NVRAM variables are inaccessible (configure VM/system firmware to UEFI to enable native NVRAM boot)",
 			"target_drive", targetDrivePath,
 			"real_disk", realDisk,
 		)
 		return nil
 	}
+
+	// Ensure efivarfs is mounted for reliable NVRAM variable access
+	_ = exec.CommandContext(ctx, "mount", "-t", "efivarfs", "efivarfs", "/sys/firmware/efi/efivars").Run()
 
 	// Determine EFI loader path based on distribution
 	loaderPath := `\EFI\BOOT\BOOTX64.EFI`
@@ -46,9 +55,14 @@ func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType dom
 		loaderPath = `\EFI\almalinux\shimx64.efi`
 	case domain.OSDebian12, domain.OSDebian13:
 		loaderPath = `\EFI\debian\shimx64.efi`
+	case domain.OSUbuntu2404, domain.OSUbuntu2204:
+		loaderPath = `\EFI\ubuntu\shimx64.efi`
 	}
 
 	label := fmt.Sprintf("RedWolf (%s)", osType)
+	if len(diskIndex) > 0 {
+		label = fmt.Sprintf("RedWolf (%s) - Disk %d", osType, diskIndex[0])
+	}
 	partNum := detectEFIPartition(ctx, realDisk, osType)
 
 	// Register boot entry on detected EFI system partition
@@ -192,12 +206,9 @@ func detectEFIPartition(ctx context.Context, realDisk string, osType ...domain.O
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
-	// Target disks partitioned by RedWolf place the EFI system partition at partition 2
-	// (partition 1 is the 1MB BIOS boot partition).
-	// Source cloud raw images attached via loopback devices have partition 2 (AlmaLinux) or 15 (Debian).
 	defaultPart := 2
 	if strings.Contains(realDisk, "loop") {
-		if strings.Contains(strings.ToLower(string(targetOS)), "debian") {
+		if strings.Contains(strings.ToLower(string(targetOS)), "debian") || strings.Contains(strings.ToLower(string(targetOS)), "ubuntu") {
 			defaultPart = 15
 		} else if strings.Contains(strings.ToLower(string(targetOS)), "almalinux") {
 			defaultPart = 2
@@ -284,8 +295,12 @@ func extractTrailingDigits(s string) int {
 }
 
 // InstallBIOSBootloader installs the GRUB MBR stage 1 bootloader into Sector 0
-// and embeds core.img into the BIOS Boot Partition (part 1) on all target drives.
-func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount, targetRootMount string) error {
+// and embeds core.img into the BIOS Boot Partition on target drives.
+func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount, targetRootMount string, mode ...domain.FirmwareMode) error {
+	if bootMount == "" && targetRootMount != "" {
+		bootMount = filepath.Join(targetRootMount, "boot")
+	}
+
 	for _, drive := range targetDrives {
 		realDisk, err := filepath.EvalSymlinks(drive)
 		if err != nil {
@@ -299,9 +314,14 @@ func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount
 
 		var installed bool
 
-		// Method 1: Discovery Agent native grub-install (packaged via grub-bios)
+		grubBin := ""
 		if _, err := exec.LookPath("grub-install"); err == nil {
-			// First try with pre-loaded enterprise storage & partition drivers directly in core.img
+			grubBin = "grub-install"
+		} else if _, err := exec.LookPath("grub2-install"); err == nil {
+			grubBin = "grub2-install"
+		}
+
+		if grubBin != "" {
 			argsWithModules := []string{
 				"--target=i386-pc",
 				"--recheck",
@@ -313,13 +333,13 @@ func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount
 			}
 			argsWithModules = append(argsWithModules, realDisk)
 
-			cmd := exec.CommandContext(ctx, "grub-install", argsWithModules...)
+			cmd := exec.CommandContext(ctx, grubBin, argsWithModules...)
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				slog.InfoContext(ctx, "successfully installed BIOS bootloader with pre-loaded modules", "disk", realDisk)
 				installed = true
 			} else {
-				slog.DebugContext(ctx, "agent grub-install with modules returned error, retrying standard grub-install",
+				slog.DebugContext(ctx, "grub-install with modules returned error, retrying standard grub-install",
 					"disk", realDisk, "error", err, "output", string(out),
 				)
 				fallbackArgs := []string{
@@ -331,20 +351,22 @@ func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount
 					fallbackArgs = append(fallbackArgs, fmt.Sprintf("--boot-directory=%s", bootMount))
 				}
 				fallbackArgs = append(fallbackArgs, realDisk)
-				fbCmd := exec.CommandContext(ctx, "grub-install", fallbackArgs...)
+				fbCmd := exec.CommandContext(ctx, grubBin, fallbackArgs...)
 				fbOut, fbErr := fbCmd.CombinedOutput()
 				if fbErr == nil {
 					slog.InfoContext(ctx, "successfully installed BIOS bootloader via fallback grub-install", "disk", realDisk)
 					installed = true
 				} else {
-					slog.DebugContext(ctx, "agent standard grub-install failed", "disk", realDisk, "error", fbErr, "output", string(fbOut))
+					slog.DebugContext(ctx, "grub-install failed", "disk", realDisk, "error", fbErr, "output", string(fbOut))
 				}
 			}
 		}
 
-		// Method 2: Target rootfs chroot grub2-install / grub-install
 		if !installed && targetRootMount != "" {
-			binds := []string{"/dev", "/proc", "/sys"}
+			binds := []string{"/dev", "/proc", "/sys", "/run"}
+			if _, err := os.Stat("/dev/pts"); err == nil {
+				binds = append(binds, "/dev/pts")
+			}
 			for _, b := range binds {
 				targetB := filepath.Join(targetRootMount, b)
 				_ = os.MkdirAll(targetB, 0755)
@@ -368,7 +390,12 @@ func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount
 			}
 		}
 
+		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
+
 		if !installed {
+			if len(mode) > 0 && mode[0] == domain.FirmwareBIOS {
+				return fmt.Errorf("%w: failed installing BIOS MBR bootloader onto %s (target image lacks grub-pc or bios_grub partition)", domain.ErrBootloaderFailed, realDisk)
+			}
 			slog.WarnContext(ctx, "could not execute grub-install for BIOS MBR (system will boot via UEFI or requires manual bootloader installation)", "disk", realDisk)
 		}
 	}
@@ -377,9 +404,9 @@ func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount
 
 // KernelInfo represents an identified kernel and its associated initramfs image.
 type KernelInfo struct {
-	KernelFile    string // Filename relative to /boot (e.g. "vmlinuz-5.14.0-427.el9.x86_64")
-	InitrdFile    string // Filename relative to /boot (e.g. "initramfs-5.14.0-427.el9.x86_64.img")
-	KernelVersion string // Extracted version string
+	KernelFile    string
+	InitrdFile    string
+	KernelVersion string
 }
 
 // FindInstalledKernel inspects the boot directory and discovers the latest kernel and matching initramfs.
@@ -408,7 +435,6 @@ func FindInstalledKernel(bootDir string) (*KernelInfo, error) {
 		}
 	}
 
-	// Fallback to rescue images if only rescue kernels were detected
 	if len(kernelCandidates) == 0 {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasPrefix(e.Name(), "vmlinuz") {
@@ -428,7 +454,6 @@ func FindInstalledKernel(bootDir string) (*KernelInfo, error) {
 		return nil, fmt.Errorf("no kernel (vmlinuz-*) found in %s", bootDir)
 	}
 
-	// Sort kernels descending so the latest / highest version is selected
 	sort.Slice(kernelCandidates, func(i, j int) bool {
 		return kernelCandidates[i] > kernelCandidates[j]
 	})
@@ -436,7 +461,6 @@ func FindInstalledKernel(bootDir string) (*KernelInfo, error) {
 	selectedKernel := kernelCandidates[0]
 	kVer := strings.TrimPrefix(selectedKernel, "vmlinuz-")
 
-	// Identify matching initramfs image
 	var selectedInitrd string
 	for _, initrd := range initrdCandidates {
 		if strings.Contains(initrd, kVer) {
@@ -467,16 +491,47 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 	var parts []string
 
 	if layout.IsLVM {
+		vgName := layout.LVMVolumeGroup
+		if vgName == "" {
+			vgName = "vg_system"
+		}
+		rootLV := "root"
+		for _, v := range layout.LVMVolumes {
+			if v.MountPoint == "/" || v.Name == "root" {
+				rootLV = v.Name
+				break
+			}
+		}
+		rootDev := layout.RootPartition
+		if rootDev == "" {
+			rootDev = fmt.Sprintf("/dev/mapper/%s-%s",
+				strings.ReplaceAll(vgName, "-", "--"),
+				strings.ReplaceAll(rootLV, "-", "--"),
+			)
+		}
 		parts = append(parts,
-			"root=/dev/mapper/vg_system-root",
+			fmt.Sprintf("root=%s", rootDev),
 			"rd.auto=1",
 			"rd.lvm=1",
+			fmt.Sprintf("rd.lvm.lv=%s/%s", vgName, rootLV),
 		)
 		if layout.IsSoftwareRAID {
 			parts = append(parts, "rd.md=1")
+			if layout.DataRAIDUUID != "" {
+				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
+			}
+			if layout.BootRAIDUUID != "" {
+				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
+			}
 		}
 	} else if layout.IsSoftwareRAID {
 		parts = append(parts, "rd.auto=1", "rd.md=1")
+		if layout.DataRAIDUUID != "" {
+			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
+		}
+		if layout.BootRAIDUUID != "" {
+			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
+		}
 		if newRootUUID != "" {
 			parts = append(parts, fmt.Sprintf("root=UUID=%s", newRootUUID))
 		} else {
@@ -492,15 +547,12 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 		}
 	}
 
-	// Use console=tty0 and disable plymouth to prevent hangs on virtual machines and show live boot status
-	parts = append(parts, "ro", "console=tty0", "plymouth.enable=0", "systemd.show_status=1")
+	parts = append(parts, "ro", "console=tty0", "console=ttyS0,115200n8", "plymouth.enable=0", "systemd.show_status=1")
 	return strings.Join(parts, " ")
 }
 
-// GenerateUniversalGrubConfig inspects the provisioned rootfs/boot directory, detects installed
-// kernel/initramfs images, and writes standalone, bulletproof grub.cfg files across all standard locations.
-// It generates explicit menu entries that boot directly, eliminating reliance on distribution-specific
-// BLS modules or missing configuration files on BIOS and UEFI firmware.
+// GenerateUniversalGrubConfig inspects installed kernel and initramfs images and writes
+// direct boot configurations across GRUB BIOS and EFI locations.
 func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, layout *StorageLayoutResult, osType domain.OperatingSystem) error {
 	bootDir := filepath.Join(targetRootMount, "boot")
 	kInfo, err := FindInstalledKernel(bootDir)
@@ -518,7 +570,7 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 		"version", kInfo.KernelVersion,
 	)
 
-	// Ensure symlink /boot/boot -> . exists so both /vmlinuz and /boot/vmlinuz paths resolve identically
+	// Ensure symlink /boot/boot -> . exists so /boot/vmlinuz paths resolve consistently
 	bootSymlink := filepath.Join(bootDir, "boot")
 	_ = os.Remove(bootSymlink)
 	_ = os.Symlink(".", bootSymlink)
@@ -529,12 +581,25 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 		bootUUID = newRootUUID
 	}
 
+	fallbackPart := "hd0,gpt3"
+	targetBootDev := layout.BootPartition
+	if targetBootDev == "" {
+		targetBootDev = layout.RootPartition
+	}
+	if strings.Contains(targetBootDev, "md") {
+		fallbackPart = "md/0"
+	} else if targetBootDev != "" {
+		num := extractTrailingDigits(targetBootDev)
+		if num > 0 {
+			fallbackPart = fmt.Sprintf("hd0,gpt%d", num)
+		}
+	}
+
 	kernelArgs := ComputeKernelArgs(layout, newRootUUID)
 	distroLabel := fmt.Sprintf("%s", osType)
 
 	var sb strings.Builder
-	sb.WriteString("# RedWolf Enterprise Bootloader Configuration\n")
-	sb.WriteString("# Automatically generated for dual BIOS/UEFI, Software RAID & LVM\n\n")
+	sb.WriteString("# Generated by RedWolf Bare-Metal Engine\n\n")
 	sb.WriteString("set default=\"0\"\n")
 	sb.WriteString("set timeout=5\n\n")
 
@@ -552,9 +617,9 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 	} else {
 		sb.WriteString("search --no-floppy --label --set=root boot\n")
 	}
-	sb.WriteString("if [ -z \"$root\" ]; then\n    set root=hd0,gpt3\nfi\n\n")
+	sb.WriteString(fmt.Sprintf("if [ -z \"$root\" ]; then\n    set root=%s\nfi\n\n", fallbackPart))
 
-	// Menuentry 1: Primary direct boot by UUID or label
+	// Primary direct boot entry: checks if kernel is in /boot or root
 	sb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - Direct Boot)\" --class gnu-linux --class os {\n", distroLabel))
 	sb.WriteString("    insmod part_gpt\n    insmod part_msdos\n    insmod ext2\n    insmod xfs\n    insmod mdraid1x\n    insmod lvm\n")
 	if bootUUID != "" {
@@ -562,12 +627,17 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 	} else {
 		sb.WriteString("    search --no-floppy --label --set=root boot\n")
 	}
-	sb.WriteString("    if [ -z \"$root\" ]; then\n        set root=hd0,gpt3\n    fi\n")
-	sb.WriteString(fmt.Sprintf("    linux /%s %s\n", kInfo.KernelFile, kernelArgs))
-	sb.WriteString(fmt.Sprintf("    initrd /%s\n", kInfo.InitrdFile))
+	sb.WriteString(fmt.Sprintf("    if [ -z \"$root\" ]; then\n        set root=%s\n    fi\n", fallbackPart))
+	sb.WriteString(fmt.Sprintf("    if [ -f /boot/%s ]; then\n", kInfo.KernelFile))
+	sb.WriteString(fmt.Sprintf("        linux /boot/%s %s\n", kInfo.KernelFile, kernelArgs))
+	sb.WriteString(fmt.Sprintf("        initrd /boot/%s\n", kInfo.InitrdFile))
+	sb.WriteString("    else\n")
+	sb.WriteString(fmt.Sprintf("        linux /%s %s\n", kInfo.KernelFile, kernelArgs))
+	sb.WriteString(fmt.Sprintf("        initrd /%s\n", kInfo.InitrdFile))
+	sb.WriteString("    fi\n")
 	sb.WriteString("}\n\n")
 
-	// Menuentry 2: Direct boot with /boot prefix
+	// Secondary direct boot entry with /boot prefix
 	sb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - Root Path /boot)\" --class gnu-linux --class os {\n", distroLabel))
 	sb.WriteString("    insmod part_gpt\n    insmod part_msdos\n    insmod ext2\n    insmod xfs\n    insmod mdraid1x\n    insmod lvm\n")
 	if bootUUID != "" {
@@ -575,12 +645,11 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 	} else {
 		sb.WriteString("    search --no-floppy --label --set=root boot\n")
 	}
-	sb.WriteString("    if [ -z \"$root\" ]; then\n        set root=hd0,gpt3\n    fi\n")
+	sb.WriteString(fmt.Sprintf("    if [ -z \"$root\" ]; then\n        set root=%s\n    fi\n", fallbackPart))
 	sb.WriteString(fmt.Sprintf("    linux /boot/%s %s\n", kInfo.KernelFile, kernelArgs))
 	sb.WriteString(fmt.Sprintf("    initrd /boot/%s\n", kInfo.InitrdFile))
 	sb.WriteString("}\n\n")
 
-	// Menuentry 3: RAID fallback md0
 	if layout.IsSoftwareRAID {
 		sb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - RAID md0 Fallback)\" --class gnu-linux --class os {\n", distroLabel))
 		sb.WriteString("    insmod part_gpt\n    insmod part_msdos\n    insmod ext2\n    insmod xfs\n    insmod mdraid1x\n    insmod lvm\n")
@@ -590,17 +659,17 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 		sb.WriteString("}\n\n")
 	}
 
-	// Menuentry 4: Partition fallback hd0,gpt3
-	sb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - Partition Fallback hd0,gpt3)\" --class gnu-linux --class os {\n", distroLabel))
+	// Partition fallback entry
+	sb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - Partition Fallback %s)\" --class gnu-linux --class os {\n", distroLabel, fallbackPart))
 	sb.WriteString("    insmod part_gpt\n    insmod part_msdos\n    insmod ext2\n    insmod xfs\n    insmod mdraid1x\n    insmod lvm\n")
-	sb.WriteString("    set root=hd0,gpt3\n")
+	sb.WriteString(fmt.Sprintf("    set root=%s\n", fallbackPart))
 	sb.WriteString(fmt.Sprintf("    linux /%s %s\n", kInfo.KernelFile, kernelArgs))
 	sb.WriteString(fmt.Sprintf("    initrd /%s\n", kInfo.InitrdFile))
 	sb.WriteString("}\n")
 
 	cfgData := []byte(sb.String())
 
-	// Write universal grub.cfg to all standard bootloader search locations
+	// Write grub.cfg to standard locations
 	targetCfgPaths := []string{
 		filepath.Join(bootDir, "grub", "grub.cfg"),
 		filepath.Join(bootDir, "grub2", "grub.cfg"),
@@ -624,7 +693,7 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 	_ = os.Symlink("../boot/grub2/grub.cfg", filepath.Join(etcDir, "grub2.cfg"))
 	_ = os.Symlink("../boot/grub/grub.cfg", filepath.Join(etcDir, "grub.cfg"))
 
-	// Write clean, syntax-error-free EFI stub grub.cfg to ESP directories
+	// Write EFI stub grub.cfg to ESP directories
 	efiBase := filepath.Join(targetRootMount, "boot", "efi", "EFI")
 	if efiEntries, err := os.ReadDir(efiBase); err == nil {
 		for _, entry := range efiEntries {
@@ -646,7 +715,7 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 			} else {
 				efiSb.WriteString("search --no-floppy --label --set=dev boot\n")
 			}
-			efiSb.WriteString("if [ -z \"$dev\" ]; then\n    set dev=hd0,gpt3\nfi\n\n")
+			efiSb.WriteString(fmt.Sprintf("if [ -z \"$dev\" ]; then\n    set dev=%s\nfi\n\n", fallbackPart))
 
 			efiSb.WriteString("configfile ($dev)/grub2/grub.cfg\n")
 			efiSb.WriteString("configfile ($dev)/grub/grub.cfg\n")
@@ -654,16 +723,20 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 			efiSb.WriteString("configfile ($dev)/boot/grub/grub.cfg\n")
 			efiSb.WriteString("configfile ($dev)/grub.cfg\n\n")
 
-			// Direct fallback menuentry in case configfile chainload encounters an error
 			efiSb.WriteString(fmt.Sprintf("menuentry \"RedWolf (%s - EFI Direct)\" {\n", distroLabel))
 			if bootUUID != "" {
 				efiSb.WriteString(fmt.Sprintf("    search --no-floppy --fs-uuid --set=root %s\n", bootUUID))
 			} else {
 				efiSb.WriteString("    search --no-floppy --label --set=root boot\n")
 			}
-			efiSb.WriteString("    if [ -z \"$root\" ]; then\n        set root=hd0,gpt3\n    fi\n")
-			efiSb.WriteString(fmt.Sprintf("    linux /%s %s\n", kInfo.KernelFile, kernelArgs))
-			efiSb.WriteString(fmt.Sprintf("    initrd /%s\n", kInfo.InitrdFile))
+			efiSb.WriteString(fmt.Sprintf("    if [ -z \"$root\" ]; then\n        set root=%s\n    fi\n", fallbackPart))
+			efiSb.WriteString(fmt.Sprintf("    if [ -f ($root)/boot/%s ]; then\n", kInfo.KernelFile))
+			efiSb.WriteString(fmt.Sprintf("        linux /boot/%s %s\n", kInfo.KernelFile, kernelArgs))
+			efiSb.WriteString(fmt.Sprintf("        initrd /boot/%s\n", kInfo.InitrdFile))
+			efiSb.WriteString("    else\n")
+			efiSb.WriteString(fmt.Sprintf("        linux /%s %s\n", kInfo.KernelFile, kernelArgs))
+			efiSb.WriteString(fmt.Sprintf("        initrd /%s\n", kInfo.InitrdFile))
+			efiSb.WriteString("    fi\n")
 			efiSb.WriteString("}\n")
 
 			_ = os.WriteFile(efiCfgPath, []byte(efiSb.String()), 0644)
@@ -673,3 +746,64 @@ func GenerateUniversalGrubConfig(ctx context.Context, targetRootMount string, la
 
 	return nil
 }
+
+// EnsureFallbackUEFILoader populates /boot/efi/EFI/BOOT with fallback BOOTX64.EFI and grub.cfg
+// so UEFI firmware will boot even if NVRAM variables are reset or not persisted.
+func EnsureFallbackUEFILoader(ctx context.Context, targetRootMount, bootUUID string) error {
+	efiBase := filepath.Join(targetRootMount, "boot", "efi", "EFI")
+	entries, err := os.ReadDir(efiBase)
+	if err != nil {
+		return nil
+	}
+
+	var shimPath, grubBinPath string
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.EqualFold(entry.Name(), "BOOT") {
+			continue
+		}
+		subDir := filepath.Join(efiBase, entry.Name())
+		if sPath := filepath.Join(subDir, "shimx64.efi"); shimPath == "" {
+			if _, err := os.Stat(sPath); err == nil {
+				shimPath = sPath
+			}
+		}
+		if gPath := filepath.Join(subDir, "grubx64.efi"); grubBinPath == "" {
+			if _, err := os.Stat(gPath); err == nil {
+				grubBinPath = gPath
+			}
+		}
+	}
+
+	bootDir := filepath.Join(efiBase, "BOOT")
+	_ = os.MkdirAll(bootDir, 0755)
+
+	fallbackLoader := filepath.Join(bootDir, "BOOTX64.EFI")
+	if _, err := os.Stat(fallbackLoader); os.IsNotExist(err) {
+		if shimPath != "" {
+			_ = exec.CommandContext(ctx, "cp", "-a", shimPath, fallbackLoader).Run()
+		} else if grubBinPath != "" {
+			_ = exec.CommandContext(ctx, "cp", "-a", grubBinPath, fallbackLoader).Run()
+		}
+	}
+
+	fallbackGrubBin := filepath.Join(bootDir, "grubx64.efi")
+	if _, err := os.Stat(fallbackGrubBin); os.IsNotExist(err) && grubBinPath != "" {
+		_ = exec.CommandContext(ctx, "cp", "-a", grubBinPath, fallbackGrubBin).Run()
+	}
+
+	fallbackCfg := filepath.Join(bootDir, "grub.cfg")
+	if bootUUID != "" {
+		var sb strings.Builder
+		sb.WriteString("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\ninsmod lvm\n")
+		sb.WriteString(fmt.Sprintf("search --no-floppy --fs-uuid --set=dev %s\n", bootUUID))
+		sb.WriteString("configfile ($dev)/grub2/grub.cfg\n")
+		sb.WriteString("configfile ($dev)/grub/grub.cfg\n")
+		sb.WriteString("configfile ($dev)/boot/grub2/grub.cfg\n")
+		sb.WriteString("configfile ($dev)/boot/grub/grub.cfg\n")
+		sb.WriteString("configfile ($dev)/grub.cfg\n")
+		_ = os.WriteFile(fallbackCfg, []byte(sb.String()), 0644)
+	}
+
+	return nil
+}
+

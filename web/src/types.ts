@@ -77,7 +77,7 @@ export interface ServerNode {
   discoveredAt: string;
 }
 
-export type OperatingSystem = 'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13';
+export type OperatingSystem = 'AlmaLinux 8' | 'AlmaLinux 9' | 'AlmaLinux 10' | 'Debian 12' | 'Debian 13' | 'Ubuntu 24.04 LTS' | 'Ubuntu 22.04 LTS';
 
 export type RAIDLevel = 'none' | 'raid0' | 'raid1' | 'raid10';
 
@@ -114,6 +114,7 @@ export interface DeploymentConfig {
   bondInterfaces?: string[];
   templateId?: string;
   customUserData?: string;
+  customNetworkConfig?: string;
 }
 
 export interface CloudInitTemplate {

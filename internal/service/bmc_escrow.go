@@ -121,7 +121,9 @@ func (s *BMCEscrowService) RotateCredentials(ctx context.Context, nodeID string,
 
 	// Update node status
 	node.BMC.CredentialsUpdated = true
-	_ = s.repo.Save(ctx, node)
+	if err := s.repo.Save(ctx, node); err != nil {
+		slog.ErrorContext(ctx, "failed saving node after bmc credential rotation", "node_id", nodeID, "error", err)
+	}
 	s.events.Publish("node:updated", node)
 
 	slog.InfoContext(ctx, "bmc credentials rotated and escrowed in vault",

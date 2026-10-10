@@ -37,9 +37,26 @@ type StorageLayoutResult struct {
 
 // SetupStorageArchitecture provisions disks according to standard, software RAID, or LVM configurations.
 func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) (*StorageLayoutResult, error) {
-	drives := cfg.Storage.TargetDrives
-	if len(drives) == 0 && cfg.TargetDrivePath != "" {
-		drives = []string{cfg.TargetDrivePath}
+	rawDrives := cfg.Storage.TargetDrives
+	if len(rawDrives) == 0 && cfg.TargetDrivePath != "" {
+		rawDrives = []string{cfg.TargetDrivePath}
+	}
+
+	seenDrives := make(map[string]bool)
+	var drives []string
+	for _, d := range rawDrives {
+		trimmed := strings.TrimSpace(d)
+		if trimmed == "" {
+			continue
+		}
+		realDev, err := filepath.EvalSymlinks(trimmed)
+		if err != nil || realDev == "" {
+			realDev = trimmed
+		}
+		if !seenDrives[realDev] {
+			seenDrives[realDev] = true
+			drives = append(drives, trimmed)
+		}
 	}
 
 	isRAID := (cfg.Storage.RAIDLevel == domain.RAIDLevel1 && len(drives) >= 2) ||
@@ -49,7 +66,6 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 
 	isLVM := cfg.Storage.LayoutMode == domain.PartitioningLVM || cfg.PartitioningPreset == domain.PartitioningLVM
 
-	// 1. Software RAID Execution (with or without LVM)
 	if isRAID {
 		return setupSoftwareRAID(ctx, drives, cfg, isLVM)
 	}
@@ -59,12 +75,10 @@ func SetupStorageArchitecture(ctx context.Context, cfg domain.DeploymentConfig) 
 		primaryDrive = drives[0]
 	}
 
-	// 2. Single-Disk LVM Setup
 	if isLVM {
 		return setupSingleDiskLVM(ctx, primaryDrive, cfg)
 	}
 
-	// 3. Single-Disk Standard Setup
 	slog.InfoContext(ctx, "configuring standard block storage target",
 		"target_drive", primaryDrive,
 		"is_lvm", false,
@@ -88,7 +102,6 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		"is_lvm", isLVM,
 	)
 
-	// Pre-load required RAID, LVM, and filesystem kernel drivers
 	for _, mod := range []string{"dm_mod", "md_mod", "raid0", "raid1", "raid10", "linear", "xfs", "ext4", "vfat"} {
 		_ = exec.CommandContext(ctx, "modprobe", mod).Run()
 	}
@@ -100,11 +113,16 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		raidLevelStr = "10"
 	}
 
-	// Stop any existing volume groups or md arrays
+	_ = exec.CommandContext(ctx, "umount", "-R", "/mnt").Run()
+	_ = exec.CommandContext(ctx, "swapoff", "-a").Run()
 	_ = exec.CommandContext(ctx, "vgchange", "-an", "vg_system").Run()
 	_ = exec.CommandContext(ctx, "vgremove", "-y", "-f", "vg_system").Run()
 	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md0").Run()
 	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md1").Run()
+	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md127").Run()
+	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md126").Run()
+	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md/0").Run()
+	_ = exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md/1").Run()
 	_ = exec.CommandContext(ctx, "mdadm", "--stop", "--scan").Run()
 
 	var espPartitions []string
@@ -119,71 +137,11 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		}
 		memberDisks = append(memberDisks, realDisk)
 
-		// Pre-wipe disk signatures and boundary structures
-		if err := WipeTargetDisk(ctx, realDisk); err != nil {
-			slog.WarnContext(ctx, "pre-wipe warning on raid drive", "drive", realDisk, "error", err)
+		_, espPart, bootPart, dataPart, err := partitionUniversalDisk(ctx, realDisk, "fd00", "fd00", "Linux Software RAID boot", "Linux Software RAID data")
+		if err != nil {
+			return nil, err
 		}
 
-		// Partition layout (Universal BIOS + UEFI dual-boot architecture):
-		// Part 1: BIOS Boot Partition (1 MiB) - ef02
-		// Part 2: ESP (1024 MiB) - ef00
-		// Part 3: /boot RAID (1024 MiB) - fd00
-		// Part 4: Data/LVM RAID (Remainder) - fd00
-		_ = exec.CommandContext(ctx, "sgdisk", "-Z", realDisk).Run()
-		partCmd := exec.CommandContext(ctx, "sgdisk",
-			"-n", "1:2048:+1M", "-t", "1:ef02", "-c", "1:BIOS Boot Partition",
-			"-n", "2:0:+1024M", "-t", "2:ef00", "-c", "2:EFI System Partition",
-			"-n", "3:0:+1024M", "-t", "3:fd00", "-c", "3:Linux Software RAID boot",
-			"-n", "4:0:0", "-t", "4:fd00", "-c", "4:Linux Software RAID data",
-			"-A", "1:set:2",
-			realDisk,
-		)
-		if out, err := partCmd.CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "sgdisk partition warning on raid drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
-			_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
-			partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
-				"mkpart", "bios_grub", "1MiB", "2MiB",
-				"set", "1", "bios_grub", "on",
-				"mkpart", "ESP", "fat32", "2MiB", "1026MiB",
-				"set", "2", "esp", "on",
-				"set", "2", "boot", "on",
-				"mkpart", "boot", "ext4", "1026MiB", "2050MiB",
-				"set", "3", "raid", "on",
-				"mkpart", "data", "ext4", "2050MiB", "100%",
-				"set", "4", "raid", "on",
-			)
-			if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
-				return nil, fmt.Errorf("failed creating GPT partitions on RAID drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
-			}
-		}
-
-		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
-		settlePartitions(ctx, realDisk)
-
-		biosPart := resolvePartitionPath(realDisk, 1)
-		espPart := resolvePartitionPath(realDisk, 2)
-		bootPart := resolvePartitionPath(realDisk, 3)
-		dataPart := resolvePartitionPath(realDisk, 4)
-
-		if err := waitForDevice(ctx, biosPart, 5*time.Second); err != nil {
-			slog.DebugContext(ctx, "waiting for bios boot partition", "partition", biosPart, "error", err)
-		}
-		if err := waitForDevice(ctx, espPart, 5*time.Second); err != nil {
-			return nil, fmt.Errorf("failed waiting for ESP partition %s: %w", espPart, err)
-		}
-		if err := waitForDevice(ctx, bootPart, 5*time.Second); err != nil {
-			return nil, fmt.Errorf("failed waiting for boot partition %s: %w", bootPart, err)
-		}
-		if err := waitForDevice(ctx, dataPart, 5*time.Second); err != nil {
-			return nil, fmt.Errorf("failed waiting for data partition %s: %w", dataPart, err)
-		}
-
-		// Format independent member ESP with FAT32
-		if out, err := exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "mkfs.vfat warning on esp partition", "partition", espPart, "output", string(out), "error", err)
-		}
-
-		// Clear leftover superblocks on member partitions
 		_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", bootPart).Run()
 		_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", dataPart).Run()
 		_ = exec.CommandContext(ctx, "mdadm", "--zero-superblock", "--force", bootPart).Run()
@@ -194,8 +152,6 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		dataRaidMembers = append(dataRaidMembers, dataPart)
 	}
 
-	// Step 1: Create /boot RAID 1 array on /dev/md0
-	// Using --metadata=1.0 puts superblock at end of partition, enabling bootloaders to read directly
 	bootMD := "/dev/md0"
 	mdadmBootArgs := []string{
 		"--create", bootMD,
@@ -211,13 +167,13 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		return nil, fmt.Errorf("failed creating boot RAID array %s: %w (output: %s)", bootMD, err, string(out))
 	}
 	_ = waitForDevice(ctx, bootMD, 5*time.Second)
+	ensureMDDeviceNode(bootMD, 0)
 
 	bootFsType := "ext4"
 	if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-L", "boot", bootMD).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed formatting boot RAID %s with ext4: %w (output: %s)", bootMD, err, string(out))
 	}
 
-	// Step 2: Create Data/Root RAID array on /dev/md1
 	dataMD := "/dev/md1"
 	mdadmDataArgs := []string{
 		"--create", dataMD,
@@ -233,6 +189,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		return nil, fmt.Errorf("failed creating data RAID array %s: %w (output: %s)", dataMD, err, string(out))
 	}
 	_ = waitForDevice(ctx, dataMD, 5*time.Second)
+	ensureMDDeviceNode(dataMD, 1)
 
 	bootRaidUUID := getMDArrayUUID(ctx, bootMD)
 	dataRaidUUID := getMDArrayUUID(ctx, dataMD)
@@ -246,7 +203,6 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		"is_lvm", isLVM,
 	)
 
-	// Step 3: If LVM is requested, build Volume Group vg_system on top of dataMD
 	if isLVM {
 		lvmRes, err := buildLVMOnBlockDevice(ctx, dataMD, cfg)
 		if err != nil {
@@ -265,9 +221,9 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		return lvmRes, nil
 	}
 
-	// Step 4: Standard Software RAID without LVM - format dataMD as root filesystem
 	rootFsType := "xfs"
-	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
+	isDebianOrUbuntu := strings.Contains(strings.ToLower(string(cfg.OS)), "debian") || strings.Contains(strings.ToLower(string(cfg.OS)), "ubuntu")
+	if isDebianOrUbuntu {
 		rootFsType = "ext4"
 		if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", dataMD).CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("failed formatting root RAID %s with ext4: %w (output: %s)", dataMD, err, string(out))
@@ -319,65 +275,12 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 
 	_ = exec.CommandContext(ctx, "vgchange", "-an", "vg_system").Run()
 	_ = exec.CommandContext(ctx, "vgremove", "-y", "-f", "vg_system").Run()
-	if err := WipeTargetDisk(ctx, realDisk); err != nil {
-		slog.WarnContext(ctx, "pre-wipe warning on LVM target drive", "drive", realDisk, "error", err)
+
+	_, espPart, bootPart, lvmPart, err := partitionUniversalDisk(ctx, realDisk, "8300", "8e00", "boot", "Linux LVM")
+	if err != nil {
+		return nil, err
 	}
 
-	// Universal Hybrid Partition layout (BIOS + UEFI dual-boot architecture):
-	// Part 1: BIOS Boot (1M) - ef02
-	// Part 2: ESP (1024M) - ef00
-	// Part 3: /boot (1024M) - 8300 (ext4)
-	// Part 4: Linux LVM (remainder) - 8e00
-	_ = exec.CommandContext(ctx, "sgdisk", "-Z", realDisk).Run()
-	partCmd := exec.CommandContext(ctx, "sgdisk",
-		"-n", "1:2048:+1M", "-t", "1:ef02", "-c", "1:BIOS Boot Partition",
-		"-n", "2:0:+1024M", "-t", "2:ef00", "-c", "2:EFI System Partition",
-		"-n", "3:0:+1024M", "-t", "3:8300", "-c", "3:boot",
-		"-n", "4:0:0", "-t", "4:8e00", "-c", "4:Linux LVM",
-		"-A", "1:set:2",
-		realDisk,
-	)
-	if out, err := partCmd.CombinedOutput(); err != nil {
-		slog.WarnContext(ctx, "sgdisk partition warning on lvm drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
-		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
-		partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
-			"mkpart", "bios_grub", "1MiB", "2MiB",
-			"set", "1", "bios_grub", "on",
-			"mkpart", "ESP", "fat32", "2MiB", "1026MiB",
-			"set", "2", "esp", "on",
-			"set", "2", "boot", "on",
-			"mkpart", "boot", "ext4", "1026MiB", "2050MiB",
-			"mkpart", "lvm", "2050MiB", "100%",
-			"set", "4", "lvm", "on",
-		)
-		if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
-			return nil, fmt.Errorf("failed creating GPT partitions on LVM drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
-		}
-	}
-
-	_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
-	settlePartitions(ctx, realDisk)
-
-	biosPart := resolvePartitionPath(realDisk, 1)
-	espPart := resolvePartitionPath(realDisk, 2)
-	bootPart := resolvePartitionPath(realDisk, 3)
-	lvmPart := resolvePartitionPath(realDisk, 4)
-
-	if err := waitForDevice(ctx, biosPart, 5*time.Second); err != nil {
-		slog.DebugContext(ctx, "waiting for bios boot partition", "partition", biosPart, "error", err)
-	}
-	if err := waitForDevice(ctx, espPart, 5*time.Second); err != nil {
-		return nil, fmt.Errorf("failed waiting for ESP partition %s: %w", espPart, err)
-	}
-	if err := waitForDevice(ctx, bootPart, 5*time.Second); err != nil {
-		return nil, fmt.Errorf("failed waiting for boot partition %s: %w", bootPart, err)
-	}
-	if err := waitForDevice(ctx, lvmPart, 5*time.Second); err != nil {
-		return nil, fmt.Errorf("failed waiting for LVM partition %s: %w", lvmPart, err)
-	}
-
-	// Format ESP and Boot partitions
-	_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
 	bootFsType := "ext4"
 	if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-L", "boot", bootPart).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed formatting boot partition %s with ext4: %w (output: %s)", bootPart, err, string(out))
@@ -397,9 +300,91 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 	return lvmRes, nil
 }
 
+// partitionUniversalDisk provisions a standard 4-partition dual BIOS/UEFI layout on target disk:
+// Part 1: BIOS Boot (1 MiB, ef02)
+// Part 2: EFI System Partition (1024 MiB, ef00)
+// Part 3: Boot partition (1024 MiB, part3Type)
+// Part 4: Data partition (remainder, part4Type)
+func partitionUniversalDisk(ctx context.Context, disk, part3Type, part4Type, part3Name, part4Name string) (string, string, string, string, error) {
+	if err := WipeTargetDisk(ctx, disk); err != nil {
+		slog.WarnContext(ctx, "pre-wipe warning on target drive", "drive", disk, "error", err)
+	}
+
+	_ = exec.CommandContext(ctx, "sgdisk", "-Z", disk).Run()
+	partCmd := exec.CommandContext(ctx, "sgdisk",
+		"-n", "1:2048:+1M", "-t", "1:ef02", "-c", "1:BIOS Boot Partition",
+		"-n", "2:0:+1024M", "-t", "2:ef00", "-c", "2:EFI System Partition",
+		"-n", "3:0:+1024M", "-t", fmt.Sprintf("3:%s", part3Type), "-c", fmt.Sprintf("3:%s", part3Name),
+		"-n", "4:0:0", "-t", fmt.Sprintf("4:%s", part4Type), "-c", fmt.Sprintf("4:%s", part4Name),
+		"-A", "1:set:2",
+		disk,
+	)
+	if out, err := partCmd.CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "sgdisk failed, using parted fallback", "drive", disk, "error", err, "output", string(out))
+		if fbErr := executePartedFallback(ctx, disk, part3Type, part4Type, part3Name, part4Name); fbErr != nil {
+			return "", "", "", "", fmt.Errorf("failed partitioning drive %s: %w", disk, fbErr)
+		}
+	}
+
+	_ = exec.CommandContext(ctx, "parted", "-s", disk, "disk_set", "pmbr_boot", "on").Run()
+	settlePartitions(ctx, disk)
+
+	biosPart := resolvePartitionPath(disk, 1)
+	espPart := resolvePartitionPath(disk, 2)
+	bootPart := resolvePartitionPath(disk, 3)
+	dataPart := resolvePartitionPath(disk, 4)
+
+	_ = waitForDevice(ctx, biosPart, 5*time.Second)
+	if err := waitForDevice(ctx, espPart, 5*time.Second); err != nil {
+		return "", "", "", "", fmt.Errorf("failed waiting for ESP partition %s: %w", espPart, err)
+	}
+	if err := waitForDevice(ctx, bootPart, 5*time.Second); err != nil {
+		return "", "", "", "", fmt.Errorf("failed waiting for boot partition %s: %w", bootPart, err)
+	}
+	if err := waitForDevice(ctx, dataPart, 5*time.Second); err != nil {
+		return "", "", "", "", fmt.Errorf("failed waiting for data partition %s: %w", dataPart, err)
+	}
+
+	if out, err := exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).CombinedOutput(); err != nil {
+		slog.WarnContext(ctx, "mkfs.vfat warning on esp partition", "partition", espPart, "output", string(out), "error", err)
+	}
+
+	return biosPart, espPart, bootPart, dataPart, nil
+}
+
+func executePartedFallback(ctx context.Context, disk, part3Type, part4Type, part3Name, part4Name string) error {
+	steps := [][]string{
+		{"mklabel", "gpt"},
+		{"-a", "optimal", "mkpart", "bios_grub", "1MiB", "2MiB"},
+		{"set", "1", "bios_grub", "on"},
+		{"-a", "optimal", "mkpart", "ESP", "fat32", "2MiB", "1026MiB"},
+		{"set", "2", "esp", "on"},
+		{"-a", "optimal", "mkpart", part3Name, "ext4", "1026MiB", "2050MiB"},
+		{"-a", "optimal", "mkpart", part4Name, "ext4", "2050MiB", "100%"},
+	}
+
+	if part3Type == "fd00" {
+		steps = append(steps, []string{"set", "3", "raid", "on"})
+	}
+	if part4Type == "fd00" {
+		steps = append(steps, []string{"set", "4", "raid", "on"})
+	} else if part4Type == "8e00" {
+		steps = append(steps, []string{"set", "4", "lvm", "on"})
+	}
+
+	for _, step := range steps {
+		args := append([]string{"-s", disk}, step...)
+		if out, err := exec.CommandContext(ctx, "parted", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("parted %v failed: %w (output: %s)", step, err, string(out))
+		}
+	}
+	return nil
+}
+
 // buildLVMOnBlockDevice initializes pvcreate, vgcreate, creates logical volumes and formats filesystems.
 func buildLVMOnBlockDevice(ctx context.Context, pvDevice string, cfg domain.DeploymentConfig) (*StorageLayoutResult, error) {
-	// Initialize PV and VG
+	_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", pvDevice).Run()
+	_ = exec.CommandContext(ctx, "pvremove", "-y", "-ff", pvDevice).Run()
 	pvCmd := exec.CommandContext(ctx, "pvcreate", "-ff", "-y", pvDevice)
 	if out, err := pvCmd.CombinedOutput(); err != nil {
 		slog.WarnContext(ctx, "pvcreate warning/error", "error", err, "output", string(out))
@@ -410,23 +395,29 @@ func buildLVMOnBlockDevice(ctx context.Context, pvDevice string, cfg domain.Depl
 		return nil, fmt.Errorf("failed creating LVM volume group vg_system on %s: %w (output: %s)", pvDevice, err, string(out))
 	}
 
+	defaultFSType := "xfs"
+	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") || strings.Contains(strings.ToLower(string(cfg.OS)), "ubuntu") {
+		defaultFSType = "ext4"
+	}
+
 	vols := cfg.Storage.LVMVolumes
 	if len(vols) == 0 {
 		vols = []domain.LVMVolumeConfig{
-			{Name: "root", MountPoint: "/", SizeGB: 10, FSType: "xfs"},
+			{Name: "root", MountPoint: "/", SizeGB: 0, FSType: defaultFSType},
 		}
 	}
 
-	// Query VG free capacity
+	// Query VG free capacity in megabytes for precise boundary calculation
 	var freeGB int = 15
-	vgsCmd := exec.CommandContext(ctx, "vgs", "--noheadings", "--nosuffix", "--units", "g", "-o", "vg_free", "vg_system")
+	vgsCmd := exec.CommandContext(ctx, "vgs", "--noheadings", "--nosuffix", "--units", "m", "-o", "vg_free", "vg_system")
 	if out, err := vgsCmd.Output(); err == nil {
-		str := strings.TrimSpace(string(out))
-		if idx := strings.Index(str, "."); idx > 0 {
-			str = str[:idx]
-		}
-		if val, err := strconv.Atoi(str); err == nil && val > 0 {
-			freeGB = val
+		fields := strings.Fields(string(out))
+		if len(fields) > 0 {
+			cleaned := strings.Trim(fields[0], "<> \t\r\n")
+			cleaned = strings.ReplaceAll(cleaned, ",", ".")
+			if freeMB, err := strconv.ParseFloat(cleaned, 64); err == nil && freeMB > 0 {
+				freeGB = int(freeMB / 1024)
+			}
 		}
 	}
 
@@ -436,52 +427,49 @@ func buildLVMOnBlockDevice(ctx context.Context, pvDevice string, cfg domain.Depl
 		totalReq += v.SizeGB
 	}
 
-	scale := 1.0
-	if totalReq > freeGB && freeGB > 3 {
-		scale = float64(freeGB-1) / float64(totalReq)
+	if totalReq > freeGB && freeGB > 0 {
+		return nil, fmt.Errorf("%w: requested total %d GB (volumes %d GB, swap %d GB), but Volume Group vg_system has only %d GB free",
+			domain.ErrInsufficientStorage, totalReq, totalReq-swapGB, swapGB, freeGB)
 	}
 
 	// Create Swap LV
 	var swapDev string
 	if swapGB > 0 {
-		scaledSwap := int(float64(swapGB) * scale)
-		if scaledSwap < 1 {
-			scaledSwap = 1
-		}
-		lvSwapCmd := exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", scaledSwap), "-n", "swap", "vg_system")
+		lvSwapCmd := exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", swapGB), "-n", "swap", "vg_system")
 		if out, err := lvSwapCmd.CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "swap lvcreate error; falling back to 1G", "error", err, "output", string(out))
-			_ = exec.CommandContext(ctx, "lvcreate", "-y", "-L", "1G", "-n", "swap", "vg_system").Run()
+			return nil, fmt.Errorf("failed creating swap logical volume (%dG): %w (output: %s)", swapGB, err, string(out))
 		}
 	}
 
-	// Create Logical Volumes
-	for i, vol := range vols {
-		isLast := (i == len(vols)-1)
-		scaledSize := int(float64(vol.SizeGB) * scale)
-		if scaledSize < 1 {
-			scaledSize = 1
+	// Order volumes so fixed-size volumes are created first, followed by the +100%FREE volume
+	var fixedVols []domain.LVMVolumeConfig
+	var fillVols []domain.LVMVolumeConfig
+	for _, v := range vols {
+		if v.SizeGB > 0 {
+			fixedVols = append(fixedVols, v)
+		} else {
+			fillVols = append(fillVols, v)
 		}
+	}
+	orderedVols := append(fixedVols, fillVols...)
 
+	// Create Logical Volumes deterministically
+	for _, vol := range orderedVols {
 		var lvCreate *exec.Cmd
-		if isLast {
+		if vol.SizeGB <= 0 {
 			lvCreate = exec.CommandContext(ctx, "lvcreate", "-y", "-l", "+100%FREE", "-n", vol.Name, "vg_system")
 		} else {
-			lvCreate = exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", scaledSize), "-n", vol.Name, "vg_system")
+			lvCreate = exec.CommandContext(ctx, "lvcreate", "-y", "-L", fmt.Sprintf("%dG", vol.SizeGB), "-n", vol.Name, "vg_system")
 		}
 
 		if out, err := lvCreate.CombinedOutput(); err != nil {
-			outFb, errFb := exec.CommandContext(ctx, "lvcreate", "-y", "-L", "2G", "-n", vol.Name, "vg_system").CombinedOutput()
-			if errFb != nil {
-				return nil, fmt.Errorf("failed creating logical volume %s: %w (output: %s; fallback: %s)", vol.Name, errFb, string(out), string(outFb))
-			}
+			return nil, fmt.Errorf("failed creating logical volume %s (%d GB): %w (output: %s)", vol.Name, vol.SizeGB, err, string(out))
 		}
 	}
 
 	_ = exec.CommandContext(ctx, "vgchange", "-ay", "vg_system").Run()
 	_ = exec.CommandContext(ctx, "vgmknodes").Run()
-	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
-	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
+	settlePartitions(ctx, pvDevice)
 	time.Sleep(1 * time.Second)
 
 	// Format swap volume
@@ -501,7 +489,7 @@ func buildLVMOnBlockDevice(ctx context.Context, pvDevice string, cfg domain.Depl
 		devNode := resolveLVMDeviceNode("vg_system", vol.Name)
 		fsType := strings.ToLower(strings.TrimSpace(vol.FSType))
 		if fsType == "" {
-			if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
+			if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") || strings.Contains(strings.ToLower(string(cfg.OS)), "ubuntu") {
 				fsType = "ext4"
 			} else {
 				fsType = "xfs"
@@ -611,8 +599,7 @@ func settlePartitions(ctx context.Context, disk string) {
 	_ = exec.CommandContext(ctx, "partprobe", disk).Run()
 	_ = exec.CommandContext(ctx, "blockdev", "--rereadpt", disk).Run()
 	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
-	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
-	time.Sleep(500 * time.Millisecond)
+	_ = exec.CommandContext(ctx, "udevadm", "settle", "--timeout=10").Run()
 }
 
 // waitForDevice polls until a device node exists in /dev or timeout expires.
@@ -622,13 +609,13 @@ func waitForDevice(ctx context.Context, devPath string, timeout time.Duration) e
 		if _, err := os.Stat(devPath); err == nil {
 			return nil
 		}
-		_ = exec.CommandContext(ctx, "mdev", "-s").Run()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	_ = exec.CommandContext(ctx, "udevadm", "settle", "--timeout=2").Run()
 	if _, err := os.Stat(devPath); err == nil {
 		return nil
 	}
@@ -652,18 +639,18 @@ func InjectMDADMConfig(ctx context.Context, mountPoint string) error {
 		filepath.Join(mountPoint, "etc", "mdadm", "mdadm.conf"),
 	}
 
+	var sb strings.Builder
+	sb.WriteString("# RedWolf Software RAID Configuration\n")
+	sb.WriteString("DEVICE partitions\n")
+	sb.Write(out)
+	sb.WriteString("\n")
+	data := []byte(sb.String())
+
 	for i, confFile := range confFiles {
 		if err := os.MkdirAll(confDirs[i], 0755); err != nil {
 			continue
 		}
-		existing, _ := os.ReadFile(confFile)
-		var content strings.Builder
-		content.WriteString(string(existing))
-		content.WriteString("\n# Auto-generated by RedWolf Provisioning Engine\n")
-		content.WriteString("DEVICE partitions\n")
-		content.WriteString(string(out))
-		content.WriteString("\n")
-		_ = os.WriteFile(confFile, []byte(content.String()), 0644)
+		_ = os.WriteFile(confFile, data, 0644)
 	}
 
 	return nil
@@ -673,14 +660,45 @@ func InjectMDADMConfig(ctx context.Context, mountPoint string) error {
 func getMDArrayUUID(ctx context.Context, mdDev string) string {
 	cmd := exec.CommandContext(ctx, "mdadm", "--detail", "--export", mdDev)
 	out, err := cmd.Output()
-	if err != nil {
-		return ""
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "MD_UUID=") {
+				val := strings.Trim(strings.TrimPrefix(trimmed, "MD_UUID="), "\"")
+				if val != "" {
+					return val
+				}
+			}
+		}
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "MD_UUID=") {
-			return strings.TrimPrefix(trimmed, "MD_UUID=")
+
+	detailCmd := exec.CommandContext(ctx, "mdadm", "--detail", mdDev)
+	detailOut, detailErr := detailCmd.Output()
+	if detailErr == nil {
+		for _, line := range strings.Split(string(detailOut), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "UUID :") {
+				val := strings.TrimSpace(strings.TrimPrefix(trimmed, "UUID :"))
+				if val != "" {
+					return val
+				}
+			}
 		}
 	}
 	return ""
+}
+
+// ensureMDDeviceNode creates a compatibility symlink if udev or devtmpfs created an alternate device node name.
+func ensureMDDeviceNode(mdPath string, index int) {
+	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+		altPath := fmt.Sprintf("/dev/md/%d", index)
+		if _, err2 := os.Stat(altPath); err2 == nil {
+			_ = os.Symlink(altPath, mdPath)
+			return
+		}
+		altPath127 := fmt.Sprintf("/dev/md%d", 127-index)
+		if _, err3 := os.Stat(altPath127); err3 == nil {
+			_ = os.Symlink(altPath127, mdPath)
+		}
+	}
 }

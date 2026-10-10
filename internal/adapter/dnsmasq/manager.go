@@ -43,6 +43,7 @@ type Manager struct {
 	cmd     *exec.Cmd
 	running bool
 	cancel  context.CancelFunc
+	exitCh  chan struct{}
 }
 
 // NewManager creates a dnsmasq process manager.
@@ -80,7 +81,7 @@ func (m *Manager) RenderConfig(ctx context.Context) error {
 	if err := os.MkdirAll(m.cfg.TFTPDir, 0755); err != nil {
 		return fmt.Errorf("failed to create tftp dir: %w", err)
 	}
-	m.seedTFTPBootloaders()
+	m.seedTFTPBootloaders(ctx)
 
 	serverIP := m.cfg.ServerIP
 	if serverIP == "" {
@@ -208,6 +209,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.running {
+		return nil
+	}
+
 	procCtx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
@@ -222,6 +227,8 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	m.cmd = cmd
 	m.running = true
+	exitCh := make(chan struct{})
+	m.exitCh = exitCh
 
 	// Monitor child process asynchronously
 	go func() {
@@ -229,6 +236,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.mu.Lock()
 		m.running = false
 		m.mu.Unlock()
+		close(exitCh)
 		if err != nil && procCtx.Err() == nil {
 			slog.Error("dnsmasq child process exited unexpectedly", "error", err)
 		}
@@ -241,34 +249,42 @@ func (m *Manager) Start(ctx context.Context) error {
 // Stop gracefully shuts down the child process.
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if !m.running || m.cmd == nil || m.cmd.Process == nil {
+		m.mu.Unlock()
 		return nil
 	}
 
-	slog.InfoContext(ctx, "stopping dnsmasq process", "pid", m.cmd.Process.Pid)
-	if m.cancel != nil {
-		m.cancel()
+	m.running = false
+	cmd := m.cmd
+	exitCh := m.exitCh
+	cancel := m.cancel
+	slog.InfoContext(ctx, "stopping dnsmasq process", "pid", cmd.Process.Pid)
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 
 	// Signal SIGTERM for clean shutdown
-	_ = m.cmd.Process.Signal(syscall.SIGTERM)
-
-	done := make(chan error, 1)
-	go func() {
-		// Wait for process release
-		time.Sleep(500 * time.Millisecond)
-		done <- nil
-	}()
+	_ = cmd.Process.Signal(syscall.SIGTERM)
 
 	select {
-	case <-done:
+	case <-exitCh:
+		// Cleanly terminated
 	case <-time.After(2 * time.Second):
-		_ = m.cmd.Process.Kill()
+		_ = cmd.Process.Kill()
+		select {
+		case <-exitCh:
+		case <-time.After(500 * time.Millisecond):
+		}
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		return ctx.Err()
 	}
 
+	m.mu.Lock()
 	m.running = false
+	m.mu.Unlock()
 	return nil
 }
 
@@ -339,7 +355,7 @@ func (m *Manager) detectInterfaceIP(ifaceName string) string {
 	return ""
 }
 
-func (m *Manager) seedTFTPBootloaders() {
+func (m *Manager) seedTFTPBootloaders(ctx context.Context) {
 	requiredFiles := []string{"ipxe.efi", "undionly.kpxe", "ipxe-arm64.efi"}
 	searchDirs := []string{
 		"assets/tftp",
@@ -358,7 +374,7 @@ func (m *Manager) seedTFTPBootloaders() {
 			srcPath := filepath.Join(srcDir, reqFile)
 			if data, err := os.ReadFile(srcPath); err == nil {
 				if err := os.WriteFile(targetPath, data, 0644); err == nil {
-					slog.Info("seeded tftp bootstrap loader", "file", reqFile, "source", srcPath, "target", targetPath)
+					slog.InfoContext(ctx, "seeded tftp bootstrap loader", "file", reqFile, "source", srcPath, "target", targetPath)
 					break
 				}
 			}

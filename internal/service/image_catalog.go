@@ -91,9 +91,21 @@ var supportedTargets = []imageTarget{
 		candidates:  []string{"debian-13-genericcloud.raw.zstd", "debian-13-genericcloud-amd64.raw", "debian-13-genericcloud.raw", "debian-13-genericcloud.raw.zst"},
 		downloadURL: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.raw",
 	},
+	{
+		os:          domain.OSUbuntu2404,
+		displayName: "Ubuntu 24.04 LTS Noble (Enterprise LTS)",
+		candidates:  []string{"ubuntu-24.04-server-cloudimg-amd64.raw.zstd", "ubuntu-24.04-server-cloudimg-amd64.raw.zst", "ubuntu-24.04-server-cloudimg-amd64.raw", "noble-server-cloudimg-amd64.raw", "noble-server-cloudimg-amd64.img", "ubuntu-24.04-server-cloudimg-amd64.img"},
+		downloadURL: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.raw",
+	},
+	{
+		os:          domain.OSUbuntu2204,
+		displayName: "Ubuntu 22.04 LTS Jammy (Enterprise LTS)",
+		candidates:  []string{"ubuntu-22.04-server-cloudimg-amd64.raw.zstd", "ubuntu-22.04-server-cloudimg-amd64.raw.zst", "ubuntu-22.04-server-cloudimg-amd64.raw", "jammy-server-cloudimg-amd64.raw", "jammy-server-cloudimg-amd64.img", "ubuntu-22.04-server-cloudimg-amd64.img"},
+		downloadURL: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.raw",
+	},
 }
 
-// getOSSlug converts domain.OperatingSystem to a filesystem and URL friendly slug (e.g. "almalinux-9", "debian-12").
+// getOSSlug converts domain.OperatingSystem to a filesystem and URL friendly slug (e.g. "almalinux-9", "debian-12", "ubuntu-24.04").
 func getOSSlug(osType domain.OperatingSystem) string {
 	switch osType {
 	case domain.OSAlmaLinux8:
@@ -106,6 +118,10 @@ func getOSSlug(osType domain.OperatingSystem) string {
 		return "debian-12"
 	case domain.OSDebian13:
 		return "debian-13"
+	case domain.OSUbuntu2404:
+		return "ubuntu-24.04"
+	case domain.OSUbuntu2204:
+		return "ubuntu-22.04"
 	default:
 		s := strings.ToLower(string(osType))
 		return strings.ReplaceAll(s, " ", "-")

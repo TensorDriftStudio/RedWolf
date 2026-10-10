@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.4%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.3.6%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.3.4` — Immutable release version
+  * `wolverandover/redwolf:1.3.6` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,19 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.4 — Embedded Asset Sync & Plymouth Suppression (Current)
+### ✅ Version 1.3.6 — Enterprise Bare-Metal Hardening & Hardware Bulletproofing (Current)
+- [x] **Fail-Fast Initramfs & Chroot Networking:** Added fail-fast error reporting if `dracut` or `update-initramfs` fails, chroot DNS resolution via `/etc/resolv.conf`, and automatic `mdadm` installation in Debian/Ubuntu chroot on Software RAID.
+- [x] **Strict Cloud-Init YAML Validation:** Pre-flight YAML schema parser for custom user-data and network configs with domain sentinel errors (`ErrInvalidYAMLConfig`, `ErrInsufficientStorage`, `ErrBootloaderFailed`).
+- [x] **Target Firmware Mode Invariants:** Explicit `FirmwareMode` (`uefi`, `bios`, `auto`) in deployment config, BIOS MBR failure detection, and unique NVRAM labels per RAID member disk.
+- [x] **Deterministic LVM & Partition Settlement:** Enforced fixed-size LVs created before dynamic `+100%FREE`, eliminated arbitrary scaling down, consolidated partition settling into `settlePartitions`, and added `udevadm settle` polling.
+- [x] **Extended Attributes Preservation:** Root filesystem image extraction using `cp -a --preserve=all` to protect SELinux contexts and capabilities.
+
+### ✅ Version 1.3.5 — Custom Cloud-Init & Storage Architecture Bulletproofing
+- [x] **Custom Cloud-Init YAML Preservation:** Intelligent top-level YAML key inspection preventing duplicate key overwrites, native LACP 802.3ad bonding (`bond0`) and 802.1Q VLAN tagging (`vlan<ID>`) generation in Netplan v2.
+- [x] **Custom Network Config Support:** Added `CustomNetworkConfig` in `domain.DeploymentConfig` for fully customizable network topologies.
+- [x] **Storage & RAID Hardening:** Megabyte free capacity querying in LVM `vgs`, pre-wiping existing disk signatures with `wipefs -a -f`, and dynamic kernel arguments for custom LV names.
+
+### ✅ Version 1.3.4 — Embedded Asset Sync & Plymouth Suppression
 - [x] **Deterministic Embedded Asset Sync:** Updated `entrypoint.sh` to copy dotfiles and `.version` from `/usr/share/redwolf/assets/discovery/.` into persistent storage, ensuring newly built discovery RAMdisks are never skipped due to missing GitHub Releases downloads.
 - [x] **Plymouth Display Suppression (`plymouth.enable=0`):** Injected `plymouth.enable=0` into target kernel cmdline to prevent Plymouth splash from seizing the console or hiding live boot output on VMware/KVM screens.
 

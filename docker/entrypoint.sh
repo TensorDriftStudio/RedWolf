@@ -25,12 +25,12 @@ if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/asse
     if [ -f "/usr/share/redwolf/assets/discovery/.version" ]; then
         cp -f "/usr/share/redwolf/assets/discovery/.version" "$REDWOLF_IMAGE_DIR/discovery/.version"
     else
-        echo "${REDWOLF_RELEASE_VERSION:-v1.3.3}" > "$REDWOLF_IMAGE_DIR/discovery/.version"
+        echo "${REDWOLF_RELEASE_VERSION:-v1.3.6}" > "$REDWOLF_IMAGE_DIR/discovery/.version"
     fi
 fi
 
 # Automatic Discovery Assets Synchronization: Download or update official prebuilt release artifacts
-RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.3.4}"
+RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.3.6}"
 CURRENT_DISCOVERY_VER=""
 [ -f "$REDWOLF_IMAGE_DIR/discovery/.version" ] && CURRENT_DISCOVERY_VER="$(cat "$REDWOLF_IMAGE_DIR/discovery/.version" 2>/dev/null || true)"
 

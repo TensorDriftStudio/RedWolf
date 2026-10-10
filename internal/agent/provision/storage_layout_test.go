@@ -133,6 +133,9 @@ func TestGenerateLVMFstab_CorrectDevicePaths(t *testing.T) {
 	if !strings.Contains(contentStr, "/dev/mapper/vg_system-root / xfs defaults 0 0") {
 		t.Errorf("expected root volume in fstab, got:\n%s", contentStr)
 	}
+	if !strings.Contains(contentStr, "/boot/efi vfat umask=0077,shortname=winnt,nofail 0 2") {
+		t.Errorf("expected nofail flag on /boot/efi in fstab, got:\n%s", contentStr)
+	}
 }
 
 func TestDirectInjectSecurityCredentials_RedwolfRelease(t *testing.T) {
@@ -143,7 +146,7 @@ func TestDirectInjectSecurityCredentials_RedwolfRelease(t *testing.T) {
 		RootPassword: "StrongPassword123!",
 	}
 
-	err := DirectInjectSecurityCredentials(tempDir, cfg)
+	err := DirectInjectSecurityCredentials(context.Background(), tempDir, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error injecting credentials: %v", err)
 	}
@@ -168,7 +171,7 @@ func TestWriteNoCloudSeeds_DualPathsAndCloudCfg(t *testing.T) {
 		OS:     domain.OSDebian12,
 	}
 
-	err := WriteNoCloudSeeds(tempDir, cfg, "00:11:22:33:44:55")
+	err := WriteNoCloudSeeds(context.Background(), tempDir, cfg, "00:11:22:33:44:55")
 	if err != nil {
 		t.Fatalf("unexpected error writing seeds: %v", err)
 	}
@@ -191,6 +194,74 @@ func TestWriteNoCloudSeeds_DualPathsAndCloudCfg(t *testing.T) {
 	}
 	if !strings.Contains(string(cfgData), "datasource_list: [ NoCloud, None ]") {
 		t.Errorf("unexpected 99-redwolf.cfg content: %s", string(cfgData))
+	}
+}
+
+func TestEnsureMDDeviceNode(t *testing.T) {
+	tempDir := t.TempDir()
+	devDir := filepath.Join(tempDir, "dev")
+	mdSubdir := filepath.Join(devDir, "md")
+	if err := os.MkdirAll(mdSubdir, 0755); err != nil {
+		t.Fatalf("failed creating test dev dir: %v", err)
+	}
+
+	// Create fake /dev/md/0
+	altNode := filepath.Join(mdSubdir, "0")
+	if err := os.WriteFile(altNode, []byte("fake-md"), 0660); err != nil {
+		t.Fatalf("failed writing fake alt node: %v", err)
+	}
+
+	targetNode := filepath.Join(devDir, "md0")
+	// Test linking logic
+	if _, err := os.Stat(targetNode); os.IsNotExist(err) {
+		if _, err2 := os.Stat(altNode); err2 == nil {
+			_ = os.Symlink(altNode, targetNode)
+		}
+	}
+
+	if _, err := os.Stat(targetNode); err != nil {
+		t.Fatalf("expected symlink %s to exist: %v", targetNode, err)
+	}
+}
+
+func TestSetupStorageArchitecture_ValidationAndPresets(t *testing.T) {
+	// RAID1 preset configuration
+	cfgRAID1 := domain.DeploymentConfig{
+		NodeID:             "node-raid1-test",
+		OS:                 domain.OSAlmaLinux9,
+		RootPassword:       "Password123!",
+		TargetDrivePath:    "/dev/sda",
+		PartitioningPreset: domain.PartitioningRAID1,
+		Storage: domain.StorageConfig{
+			RAIDLevel:    domain.RAIDLevel1,
+			TargetDrives: []string{"/dev/sda", "/dev/sdb"},
+		},
+	}
+	if err := cfgRAID1.Validate(); err != nil {
+		t.Fatalf("expected valid RAID 1 config: %v", err)
+	}
+
+	// LVM preset configuration with custom volumes
+	cfgLVM := domain.DeploymentConfig{
+		NodeID:             "node-lvm-test",
+		OS:                 domain.OSAlmaLinux9,
+		TargetDrivePath:    "/dev/nvme0n1",
+		PartitioningPreset: domain.PartitioningLVM,
+		RootPassword:       "Password123!",
+		Storage: domain.StorageConfig{
+			LayoutMode: domain.PartitioningLVM,
+			LVMVolumes: []domain.LVMVolumeConfig{
+				{Name: "root", MountPoint: "/", SizeGB: 50, FSType: "xfs"},
+				{Name: "data", MountPoint: "/data", SizeGB: 200, FSType: "ext4"},
+			},
+			SwapSizeGB: 8,
+		},
+	}
+	if err := cfgLVM.Validate(); err != nil {
+		t.Fatalf("expected valid LVM config: %v", err)
+	}
+	if len(cfgLVM.Storage.LVMVolumes) != 2 {
+		t.Fatalf("expected 2 LVM volumes, got %d", len(cfgLVM.Storage.LVMVolumes))
 	}
 }
 

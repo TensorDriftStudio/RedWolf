@@ -23,8 +23,8 @@ func TestImageCatalog_ListImages_AllSupportedTargets(t *testing.T) {
 		t.Fatalf("unexpected error listing images: %v", err)
 	}
 
-	if len(images) != 5 {
-		t.Fatalf("expected 5 supported targets, got %d", len(images))
+	if len(images) != 7 {
+		t.Fatalf("expected 7 supported targets, got %d", len(images))
 	}
 
 	expectedOS := map[domain.OperatingSystem]bool{
@@ -33,6 +33,8 @@ func TestImageCatalog_ListImages_AllSupportedTargets(t *testing.T) {
 		domain.OSAlmaLinux8:  false,
 		domain.OSAlmaLinux10: false,
 		domain.OSDebian13:    false,
+		domain.OSUbuntu2404:  false,
+		domain.OSUbuntu2204:  false,
 	}
 
 	for _, img := range images {
@@ -127,6 +129,8 @@ func TestImageCatalog_GetOSSlug(t *testing.T) {
 		{domain.OSAlmaLinux10, "almalinux-10"},
 		{domain.OSDebian12, "debian-12"},
 		{domain.OSDebian13, "debian-13"},
+		{domain.OSUbuntu2404, "ubuntu-24.04"},
+		{domain.OSUbuntu2204, "ubuntu-22.04"},
 	}
 
 	for _, tc := range tests {

@@ -14,6 +14,7 @@ const (
 type FirmwareMode string
 
 const (
+	FirmwareAuto FirmwareMode = "AUTO"
 	FirmwareUEFI FirmwareMode = "UEFI"
 	FirmwareBIOS FirmwareMode = "BIOS"
 )

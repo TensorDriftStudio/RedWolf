@@ -117,6 +117,8 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
     '#cloud-config\ngrowpart:\n  mode: auto\n  devices: [\'/\']\nresize_rootfs: true\n\npackage_update: false\nruncmd:\n  - echo "RedWolf bare-metal node initialized successfully" > /etc/redwolf-release\n'
   );
   const [showCustomYaml, setShowCustomYaml] = useState<boolean>(false);
+  const [customNetworkConfig, setCustomNetworkConfig] = useState<string>('');
+  const [showCustomNetYaml, setShowCustomNetYaml] = useState<boolean>(false);
 
   useEffect(() => {
     // 1. Fetch Cloud-Init Templates
@@ -204,6 +206,16 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
       id: 'Debian 13' as OperatingSystem,
       name: 'Debian 13',
       kernel: 'Linux 6.6',
+    },
+    {
+      id: 'Ubuntu 24.04 LTS' as OperatingSystem,
+      name: 'Ubuntu 24.04 LTS',
+      kernel: 'Linux 6.8 LTS',
+    },
+    {
+      id: 'Ubuntu 22.04 LTS' as OperatingSystem,
+      name: 'Ubuntu 22.04 LTS',
+      kernel: 'Linux 5.15 / 6.5 LTS',
     },
   ];
 
@@ -307,6 +319,7 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
       enableBonding,
       templateId: selectedTemplateId,
       customUserData: customUserData,
+      customNetworkConfig: customNetworkConfig.trim() ? customNetworkConfig : undefined,
     };
 
     try {
@@ -842,6 +855,34 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                   onChange={(e) => setEnableBonding(e.target.checked)}
                   className="rounded border-[#283244] bg-[#0c0e14] text-redwolf-primary focus:ring-0"
                 />
+              </div>
+
+              {/* Optional Custom Network-Config YAML */}
+              <div className="pt-2 border-t border-[#212836]">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomNetYaml(!showCustomNetYaml)}
+                  className="flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 transition-colors"
+                >
+                  <FileCode className="h-3.5 w-3.5" />
+                  <span>{showCustomNetYaml ? 'Hide Custom Network-Config YAML' : 'Customize Network-Config YAML (Optional)'}</span>
+                  {showCustomNetYaml ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+
+                {showCustomNetYaml && (
+                  <div className="mt-2">
+                    <p className="text-[10px] text-slate-400 mb-1">
+                      Override generated network-config version 2 template with custom YAML definitions.
+                    </p>
+                    <textarea
+                      rows={5}
+                      value={customNetworkConfig}
+                      onChange={(e) => setCustomNetworkConfig(e.target.value)}
+                      placeholder={`network:\n  version: 2\n  ethernets:\n    id0:\n      match:\n        macaddress: "${node.nics?.[0]?.mac || '52:54:00:12:34:56'}"\n      dhcp4: true`}
+                      className="w-full rounded-sm border border-[#232b3b] bg-[#080a0f] p-2 font-mono text-[11px] text-emerald-400 focus:border-redwolf-primary focus:outline-none leading-relaxed"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

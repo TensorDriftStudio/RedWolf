@@ -33,7 +33,7 @@ func main() {
 	slog.InfoContext(ctx, "RedWolf in-memory discovery agent starting")
 
 	// Determine server URL: CLI flag -> ENV -> /proc/cmdline
-	serverURL := resolveServerURL(*serverFlag)
+	serverURL := resolveServerURL(ctx, *serverFlag)
 	if serverURL == "" {
 		slog.ErrorContext(ctx, "could not determine RedWolf server URL; specify -server or set redwolf_server= in kernel cmdline")
 		os.Exit(1)
@@ -113,7 +113,7 @@ func main() {
 	}
 }
 
-func resolveServerURL(flagVal string) string {
+func resolveServerURL(ctx context.Context, flagVal string) string {
 	if flagVal != "" {
 		return flagVal
 	}
@@ -135,7 +135,7 @@ func resolveServerURL(flagVal string) string {
 	}
 
 	// Fallback: detect default gateway from system routing table
-	if out, err := exec.Command("ip", "route", "show", "default").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "ip", "route", "show", "default").Output(); err == nil {
 		fields := strings.Fields(string(out))
 		for i, f := range fields {
 			if f == "via" && i+1 < len(fields) {

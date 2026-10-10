@@ -2,20 +2,18 @@ package provision
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
 )
 
 // RepairGPTHeader moves the secondary GPT header to the physical end of the block device,
-// expands the root partition entry to use available contiguous space, and refreshes the kernel partition table.
+// expands the root partition entry to use available space, and refreshes the kernel partition table.
 func RepairGPTHeader(ctx context.Context, targetDrivePath string, osType ...domain.OperatingSystem) error {
 	realDev, err := filepath.EvalSymlinks(targetDrivePath)
 	if err != nil {
@@ -29,27 +27,23 @@ func RepairGPTHeader(ctx context.Context, targetDrivePath string, osType ...doma
 
 	slog.InfoContext(ctx, "relocating secondary GPT header to physical drive end", "target_drive", realDev, "os", targetOS)
 
-	// Step 1: Execute sgdisk -e to relocate secondary GPT header to physical disk end
 	sgdiskCmd := exec.CommandContext(ctx, "sgdisk", "-e", realDev)
 	out, err := sgdiskCmd.CombinedOutput()
 	if err != nil {
 		slog.WarnContext(ctx, "sgdisk -e returned warning/error", "error", err, "output", string(out))
-		// Some raw cloud images might use MBR or already valid GPT; try parted fix
 		partedFixCmd := exec.CommandContext(ctx, "parted", "-s", realDev, "print")
 		_ = partedFixCmd.Run()
 	}
 
-	// Step 2: Inform kernel to re-read partition table
-	_ = exec.CommandContext(ctx, "partprobe", realDev).Run()
-	_ = exec.CommandContext(ctx, "blockdev", "--rereadpt", realDev).Run()
-	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
-	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
-	time.Sleep(1 * time.Second)
+	// Ensure active boot flag on Protective MBR for legacy BIOS firmware
+	_ = exec.CommandContext(ctx, "parted", "-s", realDev, "disk_set", "pmbr_boot", "on").Run()
+	settlePartitions(ctx, realDev)
 
-	// Step 3: Automatically expand root partition entry to fill the drive
 	if err := ExpandRootPartition(ctx, realDev, targetOS); err != nil {
 		slog.WarnContext(ctx, "warning expanding root partition entry in GPT", "error", err, "drive", realDev)
 	}
+
+	settlePartitions(ctx, realDev)
 
 	slog.InfoContext(ctx, "gpt partition table repaired and synced with kernel", "target_drive", realDev)
 	return nil
@@ -84,187 +78,29 @@ func ExpandRootPartition(ctx context.Context, diskPath string, osType ...domain.
 		}
 	}
 
-	// Inform kernel of modified partition boundary
-	_ = exec.CommandContext(ctx, "partprobe", diskPath).Run()
-	_ = exec.CommandContext(ctx, "blockdev", "--rereadpt", diskPath).Run()
-	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
-	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
-	time.Sleep(1 * time.Second)
-
+	settlePartitions(ctx, diskPath)
 	return nil
 }
 
-// detectRootPartNumber parses lsblk output to identify the partition index of the root filesystem.
+// detectRootPartNumber resolves the partition index of the root filesystem on the given disk.
 func detectRootPartNumber(ctx context.Context, diskPath string, osType ...domain.OperatingSystem) (int, error) {
+	partPath, err := findRootPartition(ctx, diskPath, osType...)
+	if err != nil {
+		return 0, err
+	}
+
+	num := extractTrailingDigits(partPath)
+	if num > 0 {
+		return num, nil
+	}
+
 	var targetOS domain.OperatingSystem
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
-
-	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian")
-	defaultPart := 4
-	if isDebian {
-		defaultPart = 1
-	}
-
-	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,LABEL,PARTLABEL,PARTNUM", diskPath)
-	out, err := cmd.Output()
-	if err != nil {
-		return defaultPart, nil
-	}
-
-	var data struct {
-		BlockDevices []struct {
-			Name      string      `json:"name"`
-			Path      string      `json:"path"`
-			Type      string      `json:"type"`
-			Size      json.Number `json:"size"`
-			FSType    string      `json:"fstype"`
-			Label     string      `json:"label"`
-			PartLabel string      `json:"partlabel"`
-			PartNum   json.Number `json:"partnum"`
-			Children  []struct {
-				Name      string      `json:"name"`
-				Path      string      `json:"path"`
-				Type      string      `json:"type"`
-				Size      json.Number `json:"size"`
-				FSType    string      `json:"fstype"`
-				Label     string      `json:"label"`
-				PartLabel string      `json:"partlabel"`
-				PartNum   json.Number `json:"partnum"`
-			} `json:"children,omitempty"`
-		} `json:"blockdevices"`
-	}
-
-	if err := json.Unmarshal(out, &data); err != nil {
-		return 4, nil
-	}
-
-	type candidatePart struct {
-		num       int
-		partLabel string
-		label     string
-		fsType    string
-		size      int64
-	}
-
-	var parts []candidatePart
-	for _, dev := range data.BlockDevices {
-		if dev.Type == "part" {
-			num, _ := dev.PartNum.Int64()
-			if num == 0 {
-				num = int64(extractTrailingDigits(dev.Name))
-			}
-			sz, _ := dev.Size.Int64()
-			parts = append(parts, candidatePart{
-				num:       int(num),
-				partLabel: dev.PartLabel,
-				label:     dev.Label,
-				fsType:    dev.FSType,
-				size:      sz,
-			})
-		}
-		for _, child := range dev.Children {
-			num, _ := child.PartNum.Int64()
-			if num == 0 {
-				num = int64(extractTrailingDigits(child.Name))
-			}
-			sz, _ := child.Size.Int64()
-			parts = append(parts, candidatePart{
-				num:       int(num),
-				partLabel: child.PartLabel,
-				label:     child.Label,
-				fsType:    child.FSType,
-				size:      sz,
-			})
-		}
-	}
-
-	if len(parts) == 0 {
-		return defaultPart, nil
-	}
-
-	// 1. If Debian, partition 1 is unequivocally the root partition in GenericCloud images
-	if isDebian {
-		for _, p := range parts {
-			if p.num == 1 {
-				return 1, nil
-			}
-		}
-		for _, p := range parts {
-			if p.fsType == "ext4" && p.num > 0 {
-				return p.num, nil
-			}
-		}
+	if strings.Contains(strings.ToLower(string(targetOS)), "debian") || strings.Contains(strings.ToLower(string(targetOS)), "ubuntu") {
 		return 1, nil
 	}
-
-	// 2. Explicit root PARTLABEL or LABEL with a verified filesystem
-	for _, p := range parts {
-		if strings.Contains(strings.ToLower(p.partLabel), "root") || strings.Contains(strings.ToLower(p.label), "root") {
-			if (p.fsType == "xfs" || p.fsType == "ext4" || p.fsType == "btrfs") && p.num > 0 {
-				return p.num, nil
-			}
-		}
-	}
-
-	// 3. Largest xfs or ext4 root filesystem (excluding boot or ESP partitions)
-	var bestNum int
-	var largestSize int64
-	for _, p := range parts {
-		if p.fsType == "xfs" || p.fsType == "ext4" || p.fsType == "btrfs" {
-			if strings.EqualFold(p.label, "boot") || strings.EqualFold(p.partLabel, "boot") ||
-				strings.Contains(strings.ToLower(p.label), "efi") || strings.Contains(strings.ToLower(p.partLabel), "efi") {
-				continue
-			}
-			if p.size > largestSize {
-				largestSize = p.size
-				bestNum = p.num
-			}
-		}
-	}
-	if bestNum > 0 {
-		return bestNum, nil
-	}
-
-	// 4. Explicit root PARTLABEL or LABEL (even without recognized fstype in test mocks)
-	for _, p := range parts {
-		if strings.Contains(strings.ToLower(p.partLabel), "root") || strings.Contains(strings.ToLower(p.label), "root") {
-			if p.num > 0 {
-				return p.num, nil
-			}
-		}
-	}
-
-	// 5. For AlmaLinux/RHEL standard images, look for partition 4
-	for _, p := range parts {
-		if p.num == 4 {
-			return 4, nil
-		}
-	}
-
-	// 6. Largest filesystem overall
-	for _, p := range parts {
-		if (p.fsType == "xfs" || p.fsType == "ext4") && p.size > largestSize {
-			largestSize = p.size
-			bestNum = p.num
-		}
-	}
-	if bestNum > 0 {
-		return bestNum, nil
-	}
-
-	// 7. Largest partition overall
-	for _, p := range parts {
-		if p.size > largestSize {
-			largestSize = p.size
-			bestNum = p.num
-		}
-	}
-	if bestNum > 0 {
-		return bestNum, nil
-	}
-
-	return defaultPart, nil
+	return 4, nil
 }
 

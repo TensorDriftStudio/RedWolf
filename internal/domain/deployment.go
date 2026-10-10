@@ -4,17 +4,21 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // OperatingSystem identifies supported target distributions.
 type OperatingSystem string
 
 const (
-	OSAlmaLinux9 OperatingSystem = "AlmaLinux 9"
-	OSAlmaLinux8 OperatingSystem = "AlmaLinux 8"
-	OSDebian12   OperatingSystem = "Debian 12"
+	OSAlmaLinux9  OperatingSystem = "AlmaLinux 9"
+	OSAlmaLinux8  OperatingSystem = "AlmaLinux 8"
+	OSDebian12    OperatingSystem = "Debian 12"
 	OSAlmaLinux10 OperatingSystem = "AlmaLinux 10"
-	OSDebian13   OperatingSystem = "Debian 13"
+	OSDebian13    OperatingSystem = "Debian 13"
+	OSUbuntu2404  OperatingSystem = "Ubuntu 24.04 LTS"
+	OSUbuntu2204  OperatingSystem = "Ubuntu 22.04 LTS"
 )
 
 // PartitioningPreset defines the storage layout pattern.
@@ -78,8 +82,10 @@ type DeploymentConfig struct {
 	VLANTag            int                `json:"vlanTag,omitempty"`
 	EnableBonding      bool               `json:"enableBonding"`
 	BondInterfaces     []string           `json:"bondInterfaces,omitempty"`
-	TemplateID         string             `json:"templateId,omitempty"`
-	CustomUserData     string             `json:"customUserData,omitempty"`
+	TemplateID          string             `json:"templateId,omitempty"`
+	CustomUserData      string             `json:"customUserData,omitempty"`
+	CustomNetworkConfig string             `json:"customNetworkConfig,omitempty"`
+	FirmwareMode        FirmwareMode       `json:"firmwareMode,omitempty"`
 }
 
 // Validate verifies deployment parameters against enterprise invariants.
@@ -88,7 +94,15 @@ func (cfg *DeploymentConfig) Validate() error {
 		return fmt.Errorf("nodeId is required")
 	}
 
-	normalizedOS := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(string(cfg.OS), " ", ""), "-", ""))
+	if cfg.FirmwareMode == "" {
+		cfg.FirmwareMode = FirmwareAuto
+	}
+
+	normalizedOS := strings.ToLower(string(cfg.OS))
+	normalizedOS = strings.ReplaceAll(normalizedOS, " ", "")
+	normalizedOS = strings.ReplaceAll(normalizedOS, "-", "")
+	normalizedOS = strings.ReplaceAll(normalizedOS, ".", "")
+
 	switch normalizedOS {
 	case "almalinux9":
 		cfg.OS = OSAlmaLinux9
@@ -100,6 +114,12 @@ func (cfg *DeploymentConfig) Validate() error {
 		cfg.OS = OSDebian12
 	case "debian13":
 		cfg.OS = OSDebian13
+	case "ubuntu2404", "ubuntu2404lts", "ubuntu24", "ubuntunoble", "noble":
+		cfg.OS = OSUbuntu2404
+	case "ubuntu2204", "ubuntu2204lts", "ubuntu22", "ubuntujammy", "jammy":
+		cfg.OS = OSUbuntu2204
+	case "ubuntu", "ubuntults":
+		cfg.OS = OSUbuntu2404 // Default Ubuntu to current LTS
 	default:
 		return fmt.Errorf("unsupported operating system: %s", cfg.OS)
 	}
@@ -137,13 +157,43 @@ func (cfg *DeploymentConfig) Validate() error {
 
 	// Validate LVM Volume requirements
 	if cfg.Storage.LayoutMode == PartitioningLVM || cfg.PartitioningPreset == PartitioningLVM {
+		fillCount := 0
 		for _, vol := range cfg.Storage.LVMVolumes {
 			if strings.TrimSpace(vol.Name) == "" {
 				return fmt.Errorf("lvm volume name cannot be empty")
 			}
-			if vol.SizeGB < 1 {
-				return fmt.Errorf("lvm volume %s size must be at least 1 GB", vol.Name)
+			if vol.SizeGB < 0 {
+				return fmt.Errorf("lvm volume %s size cannot be negative", vol.Name)
 			}
+			if vol.SizeGB == 0 {
+				fillCount++
+			}
+		}
+		if fillCount > 1 {
+			return fmt.Errorf("at most one LVM volume may specify size 0 (fill remaining space)")
+		}
+	}
+
+	// Validate Custom Cloud-Init YAML formatting
+	if strings.TrimSpace(cfg.CustomUserData) != "" {
+		trimmed := strings.TrimSpace(cfg.CustomUserData)
+		// Scripts and multipart directives are exempt from pure YAML parsing
+		if !strings.HasPrefix(trimmed, "#!") &&
+			!strings.HasPrefix(trimmed, "Content-Type:") &&
+			!strings.HasPrefix(trimmed, "#include") &&
+			!strings.HasPrefix(trimmed, "#cloud-boothook") &&
+			!strings.HasPrefix(trimmed, "#upstart-job") {
+			var node yaml.Node
+			if err := yaml.Unmarshal([]byte(trimmed), &node); err != nil {
+				return fmt.Errorf("%w: user-data parsing failed: %v", ErrInvalidYAMLConfig, err)
+			}
+		}
+	}
+
+	if strings.TrimSpace(cfg.CustomNetworkConfig) != "" {
+		var node yaml.Node
+		if err := yaml.Unmarshal([]byte(cfg.CustomNetworkConfig), &node); err != nil {
+			return fmt.Errorf("%w: network-config parsing failed: %v", ErrInvalidYAMLConfig, err)
 		}
 	}
 

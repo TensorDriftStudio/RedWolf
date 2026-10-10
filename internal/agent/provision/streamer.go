@@ -19,20 +19,20 @@ import (
 // ProgressCallback notifies callers of transfer progress.
 type ProgressCallback func(percent int, writtenBytes int64, message string)
 
-// StreamImage streams and decompresses a cloud raw image directly to target block storage or disk container file.
-// It implements sparse block writes (skipping runs of zeros) to preserve drive endurance and maximize write speed.
+// StreamImage streams and decompresses a cloud raw image to the target block device or file
+// using sparse block writes to skip runs of zeros.
 func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, onProgress ProgressCallback) error {
 	slog.InfoContext(ctx, "initiating sparse block stream to target drive",
 		"image_url", imageURL,
 		"target_drive", targetDrivePath,
 	)
 
-	// Step 1: Ensure parent directory exists
+	// Ensure parent directory exists
 	if dir := filepath.Dir(targetDrivePath); dir != "" && dir != "." {
 		_ = os.MkdirAll(dir, 0755)
 	}
 
-	// Step 2: Open target block device or regular file with appropriate sync flags
+	// Open target block device or regular file with appropriate sync flags
 	openFlags := os.O_WRONLY | os.O_SYNC
 	fi, statErr := os.Stat(targetDrivePath)
 	if os.IsNotExist(statErr) {
@@ -47,7 +47,7 @@ func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, o
 	}
 	defer targetDev.Close()
 
-	// Step 2: Request image from server
+	// Fetch image payload
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed creating image http request: %w", err)
@@ -65,7 +65,7 @@ func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, o
 
 	totalExpectedBytes := resp.ContentLength
 
-	// Step 3: Wrap body with appropriate decompressor
+	// Wrap response body with decompression reader
 	var streamReader io.Reader = resp.Body
 	urlLower := strings.ToLower(imageURL)
 
@@ -85,7 +85,7 @@ func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, o
 		streamReader = gzReader
 	}
 
-	// Step 4: Stream in 4 MiB buffer chunks with sparse zero-skipping
+	// Stream in 4 MiB buffer chunks with sparse zero-skipping
 	const chunkSize = 4 * 1024 * 1024
 	buf := make([]byte, chunkSize)
 	zeroBuf := make([]byte, chunkSize)
@@ -152,7 +152,14 @@ func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, o
 		}
 	}
 
-	// Step 5: Flush disk cache to guarantee consistency
+	// For regular files, ensure sparse file size matches total decompressed size
+	if statErr == nil && (fi.Mode()&os.ModeDevice == 0) {
+		_ = targetDev.Truncate(totalDecompressedBytes)
+	} else if os.IsNotExist(statErr) {
+		_ = targetDev.Truncate(totalDecompressedBytes)
+	}
+
+	// Flush disk cache to guarantee consistency
 	if err := targetDev.Sync(); err != nil {
 		slog.WarnContext(ctx, "failed syncing target device cache", "error", err)
 	}

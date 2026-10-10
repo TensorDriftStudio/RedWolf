@@ -13,6 +13,7 @@ import (
 
 	"github.com/tensordriftstudio/redwolf/internal/adapter/crypto"
 	"github.com/tensordriftstudio/redwolf/internal/domain"
+	"gopkg.in/yaml.v3"
 )
 
 // InjectCloudInit writes NoCloud seed files directly to target rootfs by loop-mounting it in RAM.
@@ -23,7 +24,7 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 		"os", cfg.OS,
 	)
 
-	// Step 1: Detect root partition
+	// Detect root partition
 	rootPart, err := findRootPartition(ctx, targetDrivePath, cfg.OS)
 	if err != nil {
 		return fmt.Errorf("failed detecting root partition on %s: %w", targetDrivePath, err)
@@ -38,46 +39,104 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
 	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
 
-	// Step 2: Mount target rootfs
+	// Mount target root filesystem
 	slog.InfoContext(ctx, "mounting root partition", "partition", rootPart, "mountpoint", mountPoint, "os", cfg.OS)
 	if err := MountTargetFilesystem(ctx, rootPart, mountPoint, cfg.OS); err != nil {
 		return fmt.Errorf("failed mounting partition %s to %s: %w", rootPart, mountPoint, err)
 	}
 	defer func() {
-		umountCtx, umountCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		umountCtx, umountCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer umountCancel()
-		_ = exec.CommandContext(umountCtx, "umount", mountPoint).Run()
+		unmountAllUnder(umountCtx, mountPoint)
 	}()
 
-	// Step 2.1: Online expand root filesystem to use the full partition capacity
+	// Mount separate /boot and ESP partitions if present (e.g. AlmaLinux / RHEL cloud images)
+	bootMount := filepath.Join(mountPoint, "boot")
+	_ = os.MkdirAll(bootMount, 0755)
+
+	isDebianOrUbuntu := strings.Contains(strings.ToLower(string(cfg.OS)), "debian") || strings.Contains(strings.ToLower(string(cfg.OS)), "ubuntu")
+	bootPartCandidate := resolvePartitionPath(targetDrivePath, 3)
+	var bootMounted bool
+	if !isDebianOrUbuntu && bootPartCandidate != rootPart {
+		if _, err := os.Stat(bootPartCandidate); err == nil {
+			if out, err := exec.CommandContext(ctx, "mount", bootPartCandidate, bootMount).CombinedOutput(); err == nil {
+				bootMounted = true
+				slog.InfoContext(ctx, "mounted separate boot partition", "partition", bootPartCandidate, "mountpoint", bootMount)
+			} else {
+				slog.DebugContext(ctx, "boot partition mount skipped", "output", string(out))
+			}
+		}
+	}
+
+	efiMount := filepath.Join(bootMount, "efi")
+	_ = os.MkdirAll(efiMount, 0755)
+	efiPartNum := detectEFIPartition(ctx, targetDrivePath, cfg.OS)
+	efiPartCandidate := resolvePartitionPath(targetDrivePath, efiPartNum)
+	var efiMounted bool
+	if efiPartCandidate != rootPart && efiPartCandidate != bootPartCandidate {
+		if _, err := os.Stat(efiPartCandidate); err == nil {
+			if out, err := exec.CommandContext(ctx, "mount", "-t", "vfat", efiPartCandidate, efiMount).CombinedOutput(); err == nil {
+				efiMounted = true
+				slog.InfoContext(ctx, "mounted separate EFI system partition", "partition", efiPartCandidate, "mountpoint", efiMount)
+			} else {
+				slog.DebugContext(ctx, "efi partition mount skipped", "output", string(out))
+			}
+		}
+	}
+
+	// Online expand root filesystem to use the full partition capacity
 	slog.InfoContext(ctx, "auto-expanding root filesystem to full partition capacity", "partition", rootPart, "mountpoint", mountPoint)
 	xfsGrowCmd := exec.CommandContext(ctx, "xfs_growfs", mountPoint)
 	if out, err := xfsGrowCmd.CombinedOutput(); err == nil {
 		slog.InfoContext(ctx, "xfs root filesystem expanded successfully", "partition", rootPart, "output", strings.TrimSpace(string(out)))
 	} else {
-		// If not XFS, attempt online ext4 resize
 		resizeCmd := exec.CommandContext(ctx, "resize2fs", rootPart)
 		if rOut, rErr := resizeCmd.CombinedOutput(); rErr == nil {
 			slog.InfoContext(ctx, "ext4 root filesystem expanded successfully", "partition", rootPart, "output", strings.TrimSpace(string(rOut)))
 		}
 	}
 
-	// Step 3: Write NoCloud seeds (meta-data, user-data, network-config)
-	if err := WriteNoCloudSeeds(mountPoint, cfg, bootMAC); err != nil {
+	// Write NoCloud seeds (meta-data, user-data, network-config)
+	if err := WriteNoCloudSeeds(ctx, mountPoint, cfg, bootMAC); err != nil {
 		return fmt.Errorf("failed injecting NoCloud seeds: %w", err)
 	}
 
-	// Step 3.1: Directly inject credentials into rootfs (/etc/shadow, /etc/ssh, /root/.ssh)
-	if err := DirectInjectSecurityCredentials(mountPoint, cfg); err != nil {
+	// Directly inject credentials into rootfs (/etc/shadow, /etc/ssh, /root/.ssh)
+	if err := DirectInjectSecurityCredentials(ctx, mountPoint, cfg); err != nil {
 		slog.WarnContext(ctx, "non-fatal warning directly injecting credentials into rootfs", "error", err)
 	}
 
-	// Step 7: Inject mdadm.conf if Software RAID is configured
+	// Inject mdadm.conf if Software RAID is configured
 	if cfg.Storage.RAIDLevel == domain.RAIDLevel1 || cfg.Storage.RAIDLevel == domain.RAIDLevel0 || cfg.Storage.RAIDLevel == domain.RAIDLevel10 || cfg.PartitioningPreset == domain.PartitioningRAID1 {
 		if err := InjectMDADMConfig(ctx, mountPoint); err != nil {
 			slog.WarnContext(ctx, "non-fatal warning injecting mdadm.conf into rootfs", "error", err)
 		}
 	}
+
+	// Install BIOS bootloader and generate universal GRUB config while target is mounted
+	if err := InstallBIOSBootloader(ctx, []string{targetDrivePath}, bootMount, mountPoint, cfg.FirmwareMode); err != nil {
+		slog.DebugContext(ctx, "warning during BIOS bootloader installation", "error", err)
+	}
+
+	layout := &StorageLayoutResult{
+		TargetDrive:   targetDrivePath,
+		RootPartition: rootPart,
+	}
+	if bootMounted {
+		layout.BootPartition = bootPartCandidate
+	}
+	if efiMounted {
+		layout.ESPPartition = efiPartCandidate
+	}
+	if err := GenerateUniversalGrubConfig(ctx, mountPoint, layout, cfg.OS); err != nil {
+		slog.DebugContext(ctx, "non-fatal warning generating universal grub config", "error", err)
+	}
+
+	bootUUID := getPartitionUUID(ctx, layout.BootPartition)
+	if bootUUID == "" {
+		bootUUID = getPartitionUUID(ctx, layout.RootPartition)
+	}
+	_ = EnsureFallbackUEFILoader(ctx, mountPoint, bootUUID)
 
 	seedDir := filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud")
 	slog.InfoContext(ctx, "cloud-init nocloud seed injected successfully",
@@ -89,12 +148,11 @@ func InjectCloudInit(ctx context.Context, targetDrivePath string, cfg domain.Dep
 	return nil
 }
 
-// DirectInjectSecurityCredentials directly sets root password in /etc/shadow, injects SSH keys into /root/.ssh,
-// and ensures OpenSSH permits root password logins, guaranteeing immediate access without relying solely on cloud-init.
-func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentConfig) error {
+// DirectInjectSecurityCredentials writes root credentials, authorized keys, and redwolf-release to rootfs.
+func DirectInjectSecurityCredentials(ctx context.Context, mountPoint string, cfg domain.DeploymentConfig) error {
 	var errs []string
 
-	// 0. Direct /etc/redwolf-release injection
+	// Write /etc/redwolf-release
 	_ = os.MkdirAll(filepath.Join(mountPoint, "etc"), 0755)
 	releasePath := filepath.Join(mountPoint, "etc", "redwolf-release")
 	releaseContent := fmt.Sprintf("RedWolf Bare-Metal Provisioning Engine\nNode ID: %s\nOperating System: %s\nProvisioned: %s\n",
@@ -105,10 +163,10 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 	if err := os.WriteFile(releasePath, []byte(releaseContent), 0644); err != nil {
 		errs = append(errs, fmt.Sprintf("failed writing /etc/redwolf-release: %v", err))
 	} else {
-		slog.Info("injected /etc/redwolf-release successfully into rootfs", "path", releasePath)
+		slog.InfoContext(ctx, "injected /etc/redwolf-release successfully into rootfs", "path", releasePath)
 	}
 
-	// 1. Direct /etc/shadow injection
+	// Set root password hash in /etc/shadow
 	if cfg.RootPassword != "" {
 		shadowPath := filepath.Join(mountPoint, "etc", "shadow")
 		hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
@@ -151,7 +209,7 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 		}
 	}
 
-	// 2. Direct OpenSSH configuration for root login
+	// OpenSSH configuration for root login
 	sshdDropinDir := filepath.Join(mountPoint, "etc", "ssh", "sshd_config.d")
 	_ = os.MkdirAll(sshdDropinDir, 0755)
 	dropinConf := "# RedWolf Provisioning Security Policy\nPermitRootLogin yes\nPasswordAuthentication yes\n"
@@ -165,12 +223,12 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 			needsAppend = true
 		}
 		if needsAppend || !strings.Contains(content, "PermitRootLogin yes") {
-			content += "\n# RedWolf Bare-Metal Root Access\nPermitRootLogin yes\nPasswordAuthentication yes\n"
+			content += "\n# RedWolf Root Access\nPermitRootLogin yes\nPasswordAuthentication yes\n"
 			_ = os.WriteFile(sshdMainPath, []byte(content), 0644)
 		}
 	}
 
-	// 3. Direct SSH Public Keys injection
+	// SSH Public Keys injection
 	if len(cfg.SSHKeys) > 0 {
 		rootSSHDir := filepath.Join(mountPoint, "root", ".ssh")
 		_ = os.MkdirAll(rootSSHDir, 0700)
@@ -201,7 +259,7 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 		}
 	}
 
-	// 4. Ensure SELinux restores correct security context for /etc/shadow and /root/.ssh on first boot
+	// Trigger SELinux auto-relabel on first boot
 	autorelabelPath := filepath.Join(mountPoint, ".autorelabel")
 	_ = os.WriteFile(autorelabelPath, []byte(""), 0644)
 
@@ -212,7 +270,7 @@ func DirectInjectSecurityCredentials(mountPoint string, cfg domain.DeploymentCon
 }
 
 // WriteNoCloudSeeds generates and writes instance meta-data, user-data, and network-config into the target rootfs.
-func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC string) error {
+func WriteNoCloudSeeds(ctx context.Context, mountPoint string, cfg domain.DeploymentConfig, bootMAC string) error {
 	seedDirs := []string{
 		filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud"),
 		filepath.Join(mountPoint, "var", "lib", "cloud", "seed", "nocloud-net"),
@@ -238,7 +296,17 @@ func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC s
 		}
 	}
 
-	// Inject 99-redwolf.cfg to force NoCloud datasource across AlmaLinux, Debian, and Ubuntu
+	// Write Netplan config for Ubuntu and Debian distributions
+	netplanDir := filepath.Join(mountPoint, "etc", "netplan")
+	if _, err := os.Stat(netplanDir); err == nil || strings.Contains(strings.ToLower(string(cfg.OS)), "ubuntu") || strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
+		_ = os.MkdirAll(netplanDir, 0755)
+		_ = os.WriteFile(filepath.Join(netplanDir, "50-cloud-init.yaml"), []byte(networkConfigContent), 0600)
+	}
+
+	// Write NetworkManager keyfile fallback for AlmaLinux and RHEL distributions
+	writeNetworkManagerFallback(mountPoint, cfg, bootMAC)
+
+	// Force NoCloud datasource in cloud-init
 	cloudCfgDir := filepath.Join(mountPoint, "etc", "cloud", "cloud.cfg.d")
 	_ = os.MkdirAll(cloudCfgDir, 0755)
 	dsConfig := "# RedWolf Provisioning Engine NoCloud Datasource Configuration\n" +
@@ -251,6 +319,8 @@ func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC s
 
 	// Clean stale cloud-init artifacts from distro base image
 	_ = os.Remove(filepath.Join(mountPoint, "etc", "cloud", "cloud-init.disabled"))
+	_ = os.Remove(filepath.Join(mountPoint, "etc", "systemd", "system", "cloud-init.service"))
+	_ = os.Remove(filepath.Join(mountPoint, "etc", "systemd", "system", "cloud-init-local.service"))
 	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "instance"))
 	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "instances"))
 	_ = os.RemoveAll(filepath.Join(mountPoint, "var", "lib", "cloud", "data"))
@@ -259,63 +329,159 @@ func WriteNoCloudSeeds(mountPoint string, cfg domain.DeploymentConfig, bootMAC s
 	return nil
 }
 
+func writeNetworkManagerFallback(mountPoint string, cfg domain.DeploymentConfig, bootMAC string) {
+	nmDir := filepath.Join(mountPoint, "etc", "NetworkManager", "system-connections")
+	if _, err := os.Stat(nmDir); err != nil {
+		if strings.Contains(strings.ToLower(string(cfg.OS)), "alma") || strings.Contains(strings.ToLower(string(cfg.OS)), "rhel") {
+			_ = os.MkdirAll(nmDir, 0700)
+		} else {
+			return
+		}
+	}
+
+	formattedMAC := strings.ToLower(strings.TrimSpace(bootMAC))
+	var sb strings.Builder
+	sb.WriteString("[connection]\nid=redwolf-boot\ntype=ethernet\nautoconnect=true\n\n")
+	if formattedMAC != "" {
+		sb.WriteString(fmt.Sprintf("[ethernet]\nmac-address=%s\n\n", formattedMAC))
+	}
+	sb.WriteString("[ipv4]\n")
+	if cfg.NetworkMode == domain.NetworkModeStatic && cfg.StaticIP != "" {
+		cidr := cfg.NetmaskCIDR
+		if cidr <= 0 || cidr > 32 {
+			cidr = 24
+		}
+		sb.WriteString("method=manual\n")
+		if cfg.Gateway != "" {
+			sb.WriteString(fmt.Sprintf("address1=%s/%d,%s\n", cfg.StaticIP, cidr, cfg.Gateway))
+		} else {
+			sb.WriteString(fmt.Sprintf("address1=%s/%d\n", cfg.StaticIP, cidr))
+		}
+		if len(cfg.DNSServers) > 0 {
+			sb.WriteString(fmt.Sprintf("dns=%s;\n", strings.Join(cfg.DNSServers, ";")))
+		}
+	} else {
+		sb.WriteString("method=auto\n")
+	}
+	sb.WriteString("\n[ipv6]\nmethod=ignore\n")
+
+	filePath := filepath.Join(nmDir, "redwolf-boot.nmconnection")
+	_ = os.WriteFile(filePath, []byte(sb.String()), 0600)
+}
+
+func hasTopLevelYAMLKey(content, key string) bool {
+	var m map[string]any
+	if err := yaml.Unmarshal([]byte(content), &m); err == nil && m != nil {
+		_, ok := m[key]
+		return ok
+	}
+	prefix := key + ":"
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimRight(line, " \t\r")
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func generateUserData(cfg domain.DeploymentConfig) string {
 	if strings.TrimSpace(cfg.CustomUserData) != "" {
 		base := strings.TrimSpace(cfg.CustomUserData)
+
+		// Pass through shell scripts, boothooks, and MIME multipart payloads without modification
+		if strings.HasPrefix(base, "#!") ||
+			strings.HasPrefix(base, "Content-Type:") ||
+			strings.HasPrefix(base, "#include") ||
+			strings.HasPrefix(base, "#cloud-boothook") ||
+			strings.HasPrefix(base, "#upstart-job") {
+			return base + "\n"
+		}
+
 		if !strings.HasPrefix(base, "#cloud-config") {
 			base = "#cloud-config\n" + base
 		}
+
+		hasUsers := hasTopLevelYAMLKey(base, "users")
+		hasDisableRoot := hasTopLevelYAMLKey(base, "disable_root")
+		hasSSHPwAuth := hasTopLevelYAMLKey(base, "ssh_pwauth")
+		hasChpasswd := hasTopLevelYAMLKey(base, "chpasswd")
+		hasPackages := hasTopLevelYAMLKey(base, "packages")
+
 		var sb strings.Builder
 		sb.WriteString(base)
-		sb.WriteString("\n\n# RedWolf Injected Authentication & Hardening\n")
-		sb.WriteString("disable_root: false\n")
-		sb.WriteString("ssh_pwauth: true\n")
-		sb.WriteString("users:\n")
-		sb.WriteString("  - name: root\n")
-		sb.WriteString("    lock_passwd: false\n")
-		if cfg.RootPassword != "" {
-			hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
-			sb.WriteString(fmt.Sprintf("    passwd: \"%s\"\n", hashedPass))
+		sb.WriteString("\n\n")
+
+		if !hasDisableRoot {
+			sb.WriteString("disable_root: false\n")
 		}
-		if len(cfg.SSHKeys) > 0 {
-			sb.WriteString("    ssh_authorized_keys:\n")
-			for _, key := range cfg.SSHKeys {
-				if strings.TrimSpace(key) != "" {
-					sb.WriteString(fmt.Sprintf("      - %s\n", strings.TrimSpace(key)))
+		if !hasSSHPwAuth {
+			sb.WriteString("ssh_pwauth: true\n")
+		}
+
+		// Inject root credentials only if user did not supply a custom users definition
+		if !hasUsers {
+			sb.WriteString("users:\n")
+			sb.WriteString("  - name: root\n")
+			sb.WriteString("    lock_passwd: false\n")
+			if cfg.RootPassword != "" {
+				hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
+				sb.WriteString(fmt.Sprintf("    passwd: \"%s\"\n", hashedPass))
+			}
+			if len(cfg.SSHKeys) > 0 {
+				sb.WriteString("    ssh_authorized_keys:\n")
+				for _, key := range cfg.SSHKeys {
+					if trimmed := strings.TrimSpace(key); trimmed != "" {
+						sb.WriteString(fmt.Sprintf("      - %s\n", trimmed))
+					}
 				}
 			}
 		}
-		if cfg.RootPassword != "" {
+
+		if !hasChpasswd && !hasUsers && cfg.RootPassword != "" {
 			hashedPass := crypto.HashSHA512Crypt(cfg.RootPassword, "")
 			sb.WriteString("\nchpasswd:\n")
 			sb.WriteString("  list: |\n")
 			sb.WriteString(fmt.Sprintf("    root:%s\n", hashedPass))
 			sb.WriteString("  expire: false\n")
 		}
-		sb.WriteString("\nwrite_files:\n")
-		sb.WriteString("  - path: /etc/ssh/sshd_config.d/99-redwolf-root.conf\n")
-		sb.WriteString("    permissions: '0644'\n")
-		sb.WriteString("    content: |\n")
-		sb.WriteString("      PermitRootLogin yes\n")
-		sb.WriteString("      PasswordAuthentication yes\n")
-		if !strings.Contains(base, "/etc/redwolf-release") {
-			sb.WriteString("  - path: /etc/redwolf-release\n")
-			sb.WriteString("    permissions: '0644'\n")
-			sb.WriteString("    content: |\n")
-			sb.WriteString("      RedWolf Bare-Metal Provisioning Engine\n")
+
+		isRAIDOrLVM := cfg.Storage.RAIDLevel == domain.RAIDLevel1 ||
+			cfg.Storage.RAIDLevel == domain.RAIDLevel0 ||
+			cfg.Storage.RAIDLevel == domain.RAIDLevel10 ||
+			cfg.PartitioningPreset == domain.PartitioningRAID1 ||
+			cfg.PartitioningPreset == domain.PartitioningLVM ||
+			cfg.Storage.LayoutMode == domain.PartitioningLVM
+
+		if isRAIDOrLVM && !hasPackages {
+			sb.WriteString("\npackages:\n")
+			sb.WriteString("  - mdadm\n")
+			sb.WriteString("  - lvm2\n")
 		}
+
 		return sb.String()
 	}
+
+	isRAIDOrLVM := cfg.Storage.RAIDLevel == domain.RAIDLevel1 ||
+		cfg.Storage.RAIDLevel == domain.RAIDLevel0 ||
+		cfg.Storage.RAIDLevel == domain.RAIDLevel10 ||
+		cfg.PartitioningPreset == domain.PartitioningRAID1 ||
+		cfg.PartitioningPreset == domain.PartitioningLVM ||
+		cfg.Storage.LayoutMode == domain.PartitioningLVM
 
 	var sb strings.Builder
 	sb.WriteString("#cloud-config\n")
 	sb.WriteString("disable_root: false\n")
 	sb.WriteString("ssh_pwauth: true\n")
-	sb.WriteString("growpart:\n")
-	sb.WriteString("  mode: auto\n")
-	sb.WriteString("  devices: ['/']\n")
-	sb.WriteString("  ignore_growpart_interface: false\n")
-	sb.WriteString("resize_rootfs: true\n\n")
+	if !isRAIDOrLVM {
+		sb.WriteString("growpart:\n")
+		sb.WriteString("  mode: auto\n")
+		sb.WriteString("  devices: ['/']\n")
+		sb.WriteString("  ignore_growpart_interface: false\n")
+		sb.WriteString("resize_rootfs: true\n\n")
+	} else {
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("users:\n")
 	sb.WriteString("  - name: root\n")
@@ -364,50 +530,101 @@ func generateUserData(cfg domain.DeploymentConfig) string {
 }
 
 func generateNetworkConfig(cfg domain.DeploymentConfig, bootMAC string) string {
+	if strings.TrimSpace(cfg.CustomNetworkConfig) != "" {
+		return strings.TrimSpace(cfg.CustomNetworkConfig) + "\n"
+	}
+
 	var sb strings.Builder
 	sb.WriteString("network:\n")
 	sb.WriteString("  version: 2\n")
-	sb.WriteString("  ethernets:\n")
-	sb.WriteString("    id0:\n")
-	sb.WriteString("      match:\n")
-	sb.WriteString(fmt.Sprintf("        macaddress: \"%s\"\n", strings.ToLower(bootMAC)))
-	sb.WriteString("      set-name: eth0\n")
+
+	formattedMAC := strings.ToLower(strings.TrimSpace(bootMAC))
+
+	if cfg.EnableBonding {
+		sb.WriteString("  ethernets:\n")
+		sb.WriteString("    id0:\n")
+		sb.WriteString("      match:\n")
+		sb.WriteString(fmt.Sprintf("        macaddress: \"%s\"\n", formattedMAC))
+		sb.WriteString("      set-name: eth0\n")
+		sb.WriteString("  bonds:\n")
+		sb.WriteString("    bond0:\n")
+		sb.WriteString("      interfaces:\n")
+		sb.WriteString("        - id0\n")
+		sb.WriteString("      parameters:\n")
+		sb.WriteString("        mode: 802.3ad\n")
+		sb.WriteString("        lacp-rate: fast\n")
+		sb.WriteString("        mii-monitor-interval: 100\n")
+
+		targetIface := "bond0"
+		if cfg.VLANTag > 0 {
+			sb.WriteString("  vlans:\n")
+			sb.WriteString(fmt.Sprintf("    vlan%d:\n", cfg.VLANTag))
+			sb.WriteString(fmt.Sprintf("      id: %d\n", cfg.VLANTag))
+			sb.WriteString("      link: bond0\n")
+			targetIface = fmt.Sprintf("vlan%d", cfg.VLANTag)
+		}
+		appendInterfaceIPConfig(&sb, targetIface, cfg)
+	} else if cfg.VLANTag > 0 {
+		sb.WriteString("  ethernets:\n")
+		sb.WriteString("    id0:\n")
+		sb.WriteString("      match:\n")
+		sb.WriteString(fmt.Sprintf("        macaddress: \"%s\"\n", formattedMAC))
+		sb.WriteString("      set-name: eth0\n")
+		sb.WriteString("  vlans:\n")
+		sb.WriteString(fmt.Sprintf("    vlan%d:\n", cfg.VLANTag))
+		sb.WriteString(fmt.Sprintf("      id: %d\n", cfg.VLANTag))
+		sb.WriteString("      link: id0\n")
+		appendInterfaceIPConfig(&sb, fmt.Sprintf("vlan%d", cfg.VLANTag), cfg)
+	} else {
+		sb.WriteString("  ethernets:\n")
+		sb.WriteString("    id0:\n")
+		sb.WriteString("      match:\n")
+		sb.WriteString(fmt.Sprintf("        macaddress: \"%s\"\n", formattedMAC))
+		sb.WriteString("      set-name: eth0\n")
+		appendInterfaceIPConfig(&sb, "id0", cfg)
+	}
+
+	return sb.String()
+}
+
+func appendInterfaceIPConfig(sb *strings.Builder, iface string, cfg domain.DeploymentConfig) {
+	indent := "      "
+	if iface == "id0" {
+		indent = "      "
+	}
 
 	if cfg.NetworkMode == domain.NetworkModeStatic {
-		sb.WriteString("      dhcp4: false\n")
-		sb.WriteString("      dhcp6: false\n")
+		sb.WriteString(fmt.Sprintf("%sdhcp4: false\n", indent))
+		sb.WriteString(fmt.Sprintf("%sdhcp6: false\n", indent))
 		cidr := cfg.NetmaskCIDR
 		if cidr <= 0 || cidr > 32 {
 			cidr = 24
 		}
-		sb.WriteString("      addresses:\n")
-		sb.WriteString(fmt.Sprintf("        - %s/%d\n", cfg.StaticIP, cidr))
+		sb.WriteString(fmt.Sprintf("%saddresses:\n", indent))
+		sb.WriteString(fmt.Sprintf("%s  - %s/%d\n", indent, cfg.StaticIP, cidr))
 
 		if cfg.Gateway != "" {
-			sb.WriteString("      routes:\n")
-			sb.WriteString("        - to: default\n")
-			sb.WriteString(fmt.Sprintf("          via: %s\n", cfg.Gateway))
+			sb.WriteString(fmt.Sprintf("%sroutes:\n", indent))
+			sb.WriteString(fmt.Sprintf("%s  - to: default\n", indent))
+			sb.WriteString(fmt.Sprintf("%s    via: %s\n", indent, cfg.Gateway))
 		}
 
 		if len(cfg.DNSServers) > 0 {
-			sb.WriteString("      nameservers:\n")
-			sb.WriteString("        addresses:\n")
+			sb.WriteString(fmt.Sprintf("%snameservers:\n", indent))
+			sb.WriteString(fmt.Sprintf("%s  addresses:\n", indent))
 			for _, dns := range cfg.DNSServers {
-				sb.WriteString(fmt.Sprintf("          - %s\n", dns))
+				sb.WriteString(fmt.Sprintf("%s    - %s\n", indent, dns))
 			}
 		} else {
-			sb.WriteString("      nameservers:\n")
-			sb.WriteString("        addresses:\n")
-			sb.WriteString("          - 1.1.1.1\n")
-			sb.WriteString("          - 8.8.8.8\n")
+			sb.WriteString(fmt.Sprintf("%snameservers:\n", indent))
+			sb.WriteString(fmt.Sprintf("%s  addresses:\n", indent))
+			sb.WriteString(fmt.Sprintf("%s    - 1.1.1.1\n", indent))
+			sb.WriteString(fmt.Sprintf("%s    - 8.8.8.8\n", indent))
 		}
 	} else {
-		// DHCP mode
-		sb.WriteString("      dhcp4: true\n")
-		sb.WriteString("      dhcp6: false\n")
+		sb.WriteString(fmt.Sprintf("%sdhcp4: true\n", indent))
+		sb.WriteString(fmt.Sprintf("%sdhcp6: false\n", indent))
 	}
-
-	return sb.String()
 }
 
 type partInfo struct {
@@ -493,7 +710,8 @@ func findRootPartitionFromJSON(out []byte, realDev string, osType ...domain.Oper
 	if isDebian {
 		for _, p := range parts {
 			num := extractTrailingDigits(p.Name)
-			if num == 1 || strings.HasSuffix(p.Path, "p1") || strings.HasSuffix(p.Path, "1") {
+			sz, _ := p.Size.Int64()
+			if (num == 1 || strings.HasSuffix(p.Path, "p1") || strings.HasSuffix(p.Path, "1")) && (sz == 0 || sz > 100*1024*1024) {
 				return p.Path, nil
 			}
 		}
@@ -620,9 +838,9 @@ func fallbackPartitionPath(realDev string, osType ...domain.OperatingSystem) str
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
-	isDebian := strings.Contains(strings.ToLower(string(targetOS)), "debian")
+	isDebianLike := strings.Contains(strings.ToLower(string(targetOS)), "debian") || strings.Contains(strings.ToLower(string(targetOS)), "ubuntu")
 
-	if isDebian {
+	if isDebianLike {
 		part1 := resolvePartitionPath(realDev, 1)
 		if _, err := os.Stat(part1); err == nil {
 			return part1
@@ -659,8 +877,7 @@ func MountTargetFilesystem(ctx context.Context, partPath string, mountPoint stri
 	_ = os.WriteFile("/etc/filesystems", []byte("ext4\nxfs\nbtrfs\nvfat\n*\n"), 0644)
 
 	// Settle devices before probing and mounting
-	_ = exec.CommandContext(ctx, "udevadm", "settle").Run()
-	_ = exec.CommandContext(ctx, "mdev", "-s").Run()
+	settlePartitions(ctx, partPath)
 
 	// 3. Detect filesystem type via blkid / lsblk
 	detectedFSType := probeDeviceFSType(ctx, partPath)

@@ -60,11 +60,14 @@ func (b *Broadcaster) Subscribe() (<-chan []byte, func()) {
 	b.subscribers[ch] = struct{}{}
 	b.mu.Unlock()
 
+	var once sync.Once
 	unsubscribe := func() {
-		b.mu.Lock()
-		delete(b.subscribers, ch)
-		close(ch)
-		b.mu.Unlock()
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.subscribers, ch)
+			close(ch)
+			b.mu.Unlock()
+		})
 	}
 
 	return ch, unsubscribe

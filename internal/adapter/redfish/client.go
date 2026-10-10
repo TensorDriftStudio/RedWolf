@@ -64,16 +64,18 @@ func (c *Client) GetPowerState(ctx context.Context, bmc domain.BMCInfo, creds *d
 		if err != nil {
 			continue
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			continue
 		}
 
 		var payload struct {
 			PowerState string `json:"PowerState"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if decodeErr != nil {
 			continue
 		}
 

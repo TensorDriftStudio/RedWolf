@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tensordriftstudio/redwolf/internal/domain"
 )
 
 func TestParseEFIPartitionFromJSON(t *testing.T) {
@@ -167,11 +169,31 @@ func TestFindInstalledKernel_Debian(t *testing.T) {
 	}
 }
 
+func TestFindInstalledKernel_Ubuntu(t *testing.T) {
+	tempBoot := t.TempDir()
+
+	_ = os.WriteFile(filepath.Join(tempBoot, "vmlinuz-6.8.0-40-generic"), []byte("ubuntu-kernel"), 0755)
+	_ = os.WriteFile(filepath.Join(tempBoot, "initrd.img-6.8.0-40-generic"), []byte("ubuntu-initrd"), 0644)
+
+	kInfo, err := FindInstalledKernel(tempBoot)
+	if err != nil {
+		t.Fatalf("unexpected error finding ubuntu kernel: %v", err)
+	}
+
+	if kInfo.KernelFile != "vmlinuz-6.8.0-40-generic" {
+		t.Errorf("expected vmlinuz-6.8.0-40-generic, got %s", kInfo.KernelFile)
+	}
+	if kInfo.InitrdFile != "initrd.img-6.8.0-40-generic" {
+		t.Errorf("expected initrd.img-6.8.0-40-generic, got %s", kInfo.InitrdFile)
+	}
+}
+
 func TestComputeKernelArgs(t *testing.T) {
 	// 1. LVM on Software RAID 1
 	layoutRAIDLVM := &StorageLayoutResult{
 		IsLVM:          true,
 		IsSoftwareRAID: true,
+		DataRAIDUUID:   "uuid-data-999",
 		RootPartition:  "/dev/mapper/vg_system-root",
 	}
 	args := ComputeKernelArgs(layoutRAIDLVM, "")
@@ -187,6 +209,9 @@ func TestComputeKernelArgs(t *testing.T) {
 	if !strings.Contains(args, "rd.md=1") {
 		t.Errorf("expected rd.md=1 in args, got %s", args)
 	}
+	if !strings.Contains(args, "rd.md.uuid=uuid-data-999") {
+		t.Errorf("expected rd.md.uuid=uuid-data-999 in args, got %s", args)
+	}
 	if !strings.Contains(args, "plymouth.enable=0") {
 		t.Errorf("expected plymouth.enable=0 in args, got %s", args)
 	}
@@ -194,6 +219,7 @@ func TestComputeKernelArgs(t *testing.T) {
 	// 2. Software RAID 1 without LVM
 	layoutRAID := &StorageLayoutResult{
 		IsSoftwareRAID: true,
+		DataRAIDUUID:   "uuid-data-111",
 		RootPartition:  "/dev/md1",
 	}
 	argsRAID := ComputeKernelArgs(layoutRAID, "1234-abcd")
@@ -205,6 +231,9 @@ func TestComputeKernelArgs(t *testing.T) {
 	}
 	if !strings.Contains(argsRAID, "rd.md=1") {
 		t.Errorf("expected rd.md=1 in args, got %s", argsRAID)
+	}
+	if !strings.Contains(argsRAID, "rd.md.uuid=uuid-data-111") {
+		t.Errorf("expected rd.md.uuid=uuid-data-111 in args, got %s", argsRAID)
 	}
 }
 
@@ -278,4 +307,153 @@ func TestGenerateUniversalGrubConfig(t *testing.T) {
 		t.Errorf("EFI grub.cfg must not contain broken '! -f' test syntax, got: %s", efiContent)
 	}
 }
+
+func TestComputeKernelArgs_LVMAndRAID_MultiMD(t *testing.T) {
+	layout := &StorageLayoutResult{
+		IsLVM:          true,
+		IsSoftwareRAID: true,
+		DataRAIDUUID:   "uuid-data-123",
+		BootRAIDUUID:   "uuid-boot-456",
+		RootPartition:  "/dev/mapper/vg_system-root",
+	}
+
+	args := ComputeKernelArgs(layout, "")
+	if !strings.Contains(args, "rd.lvm.lv=vg_system/root") {
+		t.Errorf("expected rd.lvm.lv=vg_system/root in kernel args, got: %s", args)
+	}
+	if !strings.Contains(args, "rd.md.uuid=uuid-data-123") {
+		t.Errorf("expected data raid uuid in kernel args, got: %s", args)
+	}
+	if !strings.Contains(args, "rd.md.uuid=uuid-boot-456") {
+		t.Errorf("expected boot raid uuid in kernel args, got: %s", args)
+	}
+}
+
+func TestGenerateUniversalGrubConfig_DynamicFallbackPart(t *testing.T) {
+	targetRoot := t.TempDir()
+	bootDir := filepath.Join(targetRoot, "boot")
+	_ = os.MkdirAll(bootDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(bootDir, "vmlinuz-6.1.0-28-amd64"), []byte("kernel"), 0755)
+	_ = os.WriteFile(filepath.Join(bootDir, "initrd.img-6.1.0-28-amd64"), []byte("initrd"), 0644)
+
+	// Single disk standard or LVM where root/boot is partition 1
+	layout := &StorageLayoutResult{
+		IsLVM:         false,
+		RootPartition: "/dev/sda1",
+		BootPartition: "/dev/sda1",
+	}
+
+	err := GenerateUniversalGrubConfig(context.Background(), targetRoot, layout, "debian12")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cfgData, err := os.ReadFile(filepath.Join(bootDir, "grub", "grub.cfg"))
+	if err != nil {
+		t.Fatalf("failed reading grub.cfg: %v", err)
+	}
+	content := string(cfgData)
+
+	// Since BootPartition is /dev/sda1, fallback should be hd0,gpt1 instead of hd0,gpt3
+	if !strings.Contains(content, "set root=hd0,gpt1") {
+		t.Errorf("expected fallback hd0,gpt1 for /dev/sda1, got:\n%s", content)
+	}
+}
+
+func TestComputeKernelArgs_CustomLVMVolumeName(t *testing.T) {
+	layout := &StorageLayoutResult{
+		IsLVM:          true,
+		LVMVolumeGroup: "vg_enterprise",
+		RootPartition:  "/dev/mapper/vg_enterprise-lv_root",
+		LVMVolumes: []domain.LVMVolumeConfig{
+			{Name: "lv_root", MountPoint: "/", SizeGB: 50, FSType: "xfs"},
+			{Name: "lv_var", MountPoint: "/var", SizeGB: 100, FSType: "xfs"},
+		},
+	}
+
+	args := ComputeKernelArgs(layout, "")
+	if !strings.Contains(args, "root=/dev/mapper/vg_enterprise-lv_root") {
+		t.Errorf("expected custom root device in args, got: %s", args)
+	}
+	if !strings.Contains(args, "rd.lvm.lv=vg_enterprise/lv_root") {
+		t.Errorf("expected rd.lvm.lv=vg_enterprise/lv_root in args, got: %s", args)
+	}
+	if !strings.Contains(args, "console=ttyS0,115200n8") {
+		t.Errorf("expected serial console args for datacenter SOL, got: %s", args)
+	}
+}
+
+func TestGenerateUniversalGrubConfig_SoftwareRAID_FallbackPartition(t *testing.T) {
+	tempDir := t.TempDir()
+	bootDir := filepath.Join(tempDir, "boot")
+	if err := os.MkdirAll(bootDir, 0755); err != nil {
+		t.Fatalf("failed creating boot dir: %v", err)
+	}
+
+	_ = os.WriteFile(filepath.Join(bootDir, "vmlinuz-6.6.0-enterprise"), []byte("kernel"), 0644)
+	_ = os.WriteFile(filepath.Join(bootDir, "initramfs-6.6.0-enterprise.img"), []byte("initramfs"), 0644)
+
+	layout := &StorageLayoutResult{
+		IsSoftwareRAID: true,
+		BootPartition:  "/dev/md0",
+		RootPartition:  "/dev/md1",
+	}
+
+	err := GenerateUniversalGrubConfig(context.Background(), tempDir, layout, domain.OSAlmaLinux9)
+	if err != nil {
+		t.Fatalf("unexpected error generating universal grub config: %v", err)
+	}
+
+	cfgData, err := os.ReadFile(filepath.Join(bootDir, "grub", "grub.cfg"))
+	if err != nil {
+		t.Fatalf("failed reading grub.cfg: %v", err)
+	}
+	content := string(cfgData)
+
+	// Since BootPartition is /dev/md0, fallback must be md/0, NEVER hd0,gpt0
+	if strings.Contains(content, "hd0,gpt0") {
+		t.Errorf("fallback partition must never be invalid hd0,gpt0 on RAID, got:\n%s", content)
+	}
+	if !strings.Contains(content, "set root=md/0") {
+		t.Errorf("expected fallback set root=md/0 for /dev/md0, got:\n%s", content)
+	}
+}
+
+func TestEnsureFallbackUEFILoader(t *testing.T) {
+	tempDir := t.TempDir()
+	distroEFI := filepath.Join(tempDir, "boot", "efi", "EFI", "almalinux")
+	_ = os.MkdirAll(distroEFI, 0755)
+
+	_ = os.WriteFile(filepath.Join(distroEFI, "shimx64.efi"), []byte("shim-binary"), 0755)
+	_ = os.WriteFile(filepath.Join(distroEFI, "grubx64.efi"), []byte("grub-binary"), 0755)
+
+	err := EnsureFallbackUEFILoader(context.Background(), tempDir, "1111-2222")
+	if err != nil {
+		t.Fatalf("unexpected error ensuring fallback loader: %v", err)
+	}
+
+	fallbackLoader := filepath.Join(tempDir, "boot", "efi", "EFI", "BOOT", "BOOTX64.EFI")
+	if data, err := os.ReadFile(fallbackLoader); err != nil || string(data) != "shim-binary" {
+		t.Fatalf("expected fallback BOOTX64.EFI to exist with shim content, err: %v", err)
+	}
+
+	fallbackCfg := filepath.Join(tempDir, "boot", "efi", "EFI", "BOOT", "grub.cfg")
+	if data, err := os.ReadFile(fallbackCfg); err != nil || !strings.Contains(string(data), "1111-2222") {
+		t.Fatalf("expected fallback grub.cfg to contain boot UUID, err: %v", err)
+	}
+}
+
+func TestInstallBIOSBootloader_ModeFlagFailure(t *testing.T) {
+	// When BIOS mode is explicitly requested but grub cannot be installed, must return ErrBootloaderFailed
+	err := InstallBIOSBootloader(context.Background(), []string{"/dev/null"}, "", t.TempDir(), domain.FirmwareBIOS)
+	if err == nil {
+		t.Fatal("expected error when grub-install fails in FirmwareBIOS mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed installing BIOS MBR bootloader") {
+		t.Fatalf("expected error mentioning BIOS MBR bootloader, got: %v", err)
+	}
+}
+
+
 

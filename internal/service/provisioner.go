@@ -133,6 +133,10 @@ func (p *Provisioner) InitiateDeployment(ctx context.Context, cfg domain.Deploym
 			imageFilename = "almalinux-10-genericcloud.raw.zstd"
 		case domain.OSDebian13:
 			imageFilename = "debian-13-genericcloud.raw.zstd"
+		case domain.OSUbuntu2404:
+			imageFilename = "ubuntu-24.04-server-cloudimg-amd64.raw.zstd"
+		case domain.OSUbuntu2204:
+			imageFilename = "ubuntu-22.04-server-cloudimg-amd64.raw.zstd"
 		default:
 			imageFilename = fmt.Sprintf("%s-genericcloud.raw.zstd", cfg.OS)
 		}
@@ -243,6 +247,9 @@ func (p *Provisioner) UpdateProgress(ctx context.Context, nodeID string, progres
 	if logMsg != "" {
 		timestamped := fmt.Sprintf("[%s] %s", time.Now().UTC().Format("15:04:05"), logMsg)
 		node.ProvisioningState.Logs = append(node.ProvisioningState.Logs, timestamped)
+		if len(node.ProvisioningState.Logs) > 500 {
+			node.ProvisioningState.Logs = node.ProvisioningState.Logs[len(node.ProvisioningState.Logs)-500:]
+		}
 	}
 
 	if progress >= 100 {

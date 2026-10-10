@@ -12,6 +12,9 @@ var (
 	ErrInvalidIPAddress     = errors.New("invalid IP address format")
 	ErrMissingCredentials   = errors.New("missing or empty credentials")
 	ErrInvalidPasswordLen   = errors.New("BMC password must be between 14 and 16 characters")
+	ErrInvalidYAMLConfig    = errors.New("invalid YAML syntax in cloud-init configuration")
+	ErrInsufficientStorage  = errors.New("insufficient storage capacity for requested layout")
+	ErrBootloaderFailed     = errors.New("bootloader installation or registration failed")
 )
 
 // ErrNodeNotFoundIs checks whether an error unwraps to ErrNodeNotFound.
