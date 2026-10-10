@@ -138,3 +138,38 @@ func TestStreamImage_RegularFile(t *testing.T) {
 	}
 }
 
+func TestTryRebuildInitramfs_NoKernel(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	err := tryRebuildInitramfs(ctx, tempDir, true)
+	if err == nil {
+		t.Fatalf("expected error when kernel is missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "kernel not found in /boot") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestTryRebuildInitramfs_FallbackToExisting(t *testing.T) {
+	tempDir := t.TempDir()
+	bootDir := filepath.Join(tempDir, "boot")
+	_ = os.MkdirAll(bootDir, 0755)
+
+	kernelFile := filepath.Join(bootDir, "vmlinuz-5.14.0-687.53.1.el9_8.x86_64")
+	initrdFile := filepath.Join(bootDir, "initramfs-5.14.0-687.53.1.el9_8.x86_64.img")
+
+	_ = os.WriteFile(kernelFile, []byte("fake kernel binary"), 0644)
+	// Write dummy initramfs with size > 1MB
+	bigData := make([]byte, 2*1024*1024)
+	_ = os.WriteFile(initrdFile, bigData, 0644)
+
+	ctx := context.Background()
+	// Should succeed without error because a valid >1MB initramfs exists, even though dracut is not present in mock rootfs
+	err := tryRebuildInitramfs(ctx, tempDir, true)
+	if err != nil {
+		t.Fatalf("expected nil error on fallback to existing initramfs, got: %v", err)
+	}
+}
+
+

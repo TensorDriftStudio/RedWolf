@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.6%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.3.7%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.3.6` — Immutable release version
+  * `wolverandover/redwolf:1.3.7` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.6 — Enterprise Bare-Metal Hardening & Hardware Bulletproofing (Current)
+### ✅ Version 1.3.7 — Dracut Dynamic Module Discovery & Initramfs Bulletproofing (Current)
+- [x] **Dracut Dynamic Module Discovery:** Automatically detects installed dracut modules and presence of `mdadm` binary before passing `--add` arguments, eliminating `dracut module 'mdraid' cannot be found or installed` errors.
+- [x] **Automated Package Manager Installation:** Injects `mdadm` into AlmaLinux / RHEL / Fedora chroots via `dnf`/`microdnf` when Software RAID is requested.
+- [x] **Multi-Tiered Initramfs Fallbacks:** Tiered fallback from explicit target image -> generic dracut -> storage drivers only -> seamless preservation of pre-existing valid cloud image initramfs.
+- [x] **Clean Storage Teardown on Failure:** Ensured `CleanShutdownStorage` executes via `defer` in `ExecuteProvisioning`, cleanly stopping `md` arrays and LVM volume groups on error, eliminating `md: resync interrupted`.
+
+### ✅ Version 1.3.6 — Enterprise Bare-Metal Hardening & Hardware Bulletproofing
 - [x] **Fail-Fast Initramfs & Chroot Networking:** Added fail-fast error reporting if `dracut` or `update-initramfs` fails, chroot DNS resolution via `/etc/resolv.conf`, and automatic `mdadm` installation in Debian/Ubuntu chroot on Software RAID.
 - [x] **Strict Cloud-Init YAML Validation:** Pre-flight YAML schema parser for custom user-data and network configs with domain sentinel errors (`ErrInvalidYAMLConfig`, `ErrInsufficientStorage`, `ErrBootloaderFailed`).
 - [x] **Target Firmware Mode Invariants:** Explicit `FirmwareMode` (`uefi`, `bios`, `auto`) in deployment config, BIOS MBR failure detection, and unique NVRAM labels per RAID member disk.

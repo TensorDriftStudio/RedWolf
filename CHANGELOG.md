@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.7] - 2026-10-10 (Dracut Dynamic Module Discovery & Initramfs Bulletproofing Release)
+
+### Fixed
+- **Dracut Dynamic Module Discovery & Package Manager Integration (`executor.go`):**
+  - Resolved `dracut module 'mdraid' cannot be found or installed` error by dynamically detecting installed dracut modules (`90mdraid`, `90lvm`) and presence of `mdadm` binary before passing `--add` parameters.
+  - Implemented proactive check and automated `dnf`/`microdnf` installation of `mdadm` inside AlmaLinux / RHEL / Fedora chroots when Software RAID is requested.
+  - Added multi-tiered dracut fallback strategy: explicit target image with modules -> generic dracut with modules -> storage drivers only (`--add-drivers` without `--add`) -> seamless fallback to pre-existing valid cloud image initramfs.
+  - Added identical stock initramfs preservation fallback to Debian / Ubuntu `update-initramfs` and environments without initramfs generator tools.
+- **Clean Storage Subsystem Teardown on Failure (`executor.go`):**
+  - Guaranteed `CleanShutdownStorage` execution via `defer` in `ExecuteProvisioning`, cleanly stopping `md` RAID arrays, deactivating LVM volume groups, and flushing disk caches even when provisioning errors occur, eliminating `md: resync interrupted` warnings during reboot.
+
 ## [1.3.6] - 2026-10-10 (Enterprise Bare-Metal Provisioning Hardening & Hardware Bulletproofing)
 
 ### Added

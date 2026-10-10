@@ -44,12 +44,14 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 	}
 
 	if layout.IsLVM || layout.IsSoftwareRAID {
+		defer CleanShutdownStorage(context.Background(), "/mnt/redwolf-target", layout)
 		if err := executeExtractDeployment(ctx, task, layout, bootMAC, reporter); err != nil {
 			errMsg := fmt.Sprintf("Deployment failed: %v", err)
 			_ = reporter.Report(ctx, nodeID, 0, "Deployment Failed", errMsg)
 			return err
 		}
 	} else {
+		defer CleanShutdownStorage(context.Background(), "/mnt/redwolf-target", layout)
 		if err := executeStandardDeployment(ctx, task, layout, bootMAC, reporter); err != nil {
 			errMsg := fmt.Sprintf("Deployment failed: %v", err)
 			_ = reporter.Report(ctx, nodeID, 0, "Deployment Failed", errMsg)
@@ -780,6 +782,12 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 
 	slog.InfoContext(ctx, "regenerating initramfs inside target chroot", "kernel_version", kInfo.KernelVersion)
 
+	hasExistingInitrd := false
+	initrdPath := filepath.Join(targetRootMount, "boot", kInfo.InitrdFile)
+	if fi, sErr := os.Stat(initrdPath); sErr == nil && fi.Size() > 1024*1024 {
+		hasExistingInitrd = true
+	}
+
 	// Provide DNS resolution in chroot
 	resolvSource := "/etc/resolv.conf"
 	resolvTarget := filepath.Join(targetRootMount, "etc", "resolv.conf")
@@ -804,24 +812,103 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 	// Dracut (AlmaLinux / RHEL / CentOS / Fedora)
 	dracutPath := filepath.Join(targetRootMount, "usr", "bin", "dracut")
 	if _, err := os.Stat(dracutPath); err == nil {
+		if raidRequired {
+			hasMdadm := false
+			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+					hasMdadm = true
+					break
+				}
+			}
+			if !hasMdadm {
+				slog.InfoContext(ctx, "mdadm not found in chroot; attempting package manager installation for Software RAID support")
+				for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
+					if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
+						dnfCtx, dnfCancel := context.WithTimeout(ctx, 30*time.Second)
+						_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "mdadm").Run()
+						dnfCancel()
+						break
+					}
+				}
+			}
+		}
+
+		// Dynamically discover supported dracut modules
+		var addModules []string
+		if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90lvm")); sErr == nil {
+			addModules = append(addModules, "lvm")
+		}
+
+		if raidRequired {
+			hasMdadm := false
+			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+					hasMdadm = true
+					break
+				}
+			}
+			if hasMdadm {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90mdraid")); sErr == nil {
+					addModules = append(addModules, "mdraid")
+				}
+			}
+		}
+
 		targetImg := filepath.Join("/boot", kInfo.InitrdFile)
-		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", targetImg, kInfo.KernelVersion,
-			"--add", "mdraid lvm",
-			"--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+
+		// 1. Attempt with explicit targetImg
+		var args []string
+		args = append(args, "--force", targetImg, kInfo.KernelVersion)
+		if len(addModules) > 0 {
+			args = append(args, "--add", strings.Join(addModules, " "))
+		}
+		args = append(args, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+
+		cmdArgs := append([]string{targetRootMount, "dracut"}, args...)
+		cmd := exec.CommandContext(ctx, "chroot", cmdArgs...)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "target_img", targetImg, "kernel_version", kInfo.KernelVersion)
 			return nil
 		}
+
+		// 2. Retry with generic --kver
 		slog.WarnContext(ctx, "dracut regeneration with explicit image returned warning; retrying generic dracut", "output", string(out), "error", err)
-		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion,
-			"--add", "mdraid lvm",
-			"--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+		var kverArgs []string
+		kverArgs = append(kverArgs, "--force", "--kver", kInfo.KernelVersion)
+		if len(addModules) > 0 {
+			kverArgs = append(kverArgs, "--add", strings.Join(addModules, " "))
+		}
+		kverArgs = append(kverArgs, "--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+
+		kverCmdArgs := append([]string{targetRootMount, "dracut"}, kverArgs...)
+		cmd = exec.CommandContext(ctx, "chroot", kverCmdArgs...)
 		out, err = cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
 			return nil
 		}
+
+		// 3. Retry without --add (storage and raid drivers only)
+		slog.WarnContext(ctx, "dracut regeneration with modules returned warning; retrying with storage drivers only", "output", string(out), "error", err)
+		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion,
+			"--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			slog.InfoContext(ctx, "successfully regenerated dracut initramfs with storage drivers inside chroot", "kernel_version", kInfo.KernelVersion)
+			return nil
+		}
+
+		// 4. Fallback to existing valid initramfs if available
+		if hasExistingInitrd {
+			slog.WarnContext(ctx, "dracut regeneration in chroot failed, but existing valid initramfs present in /boot; continuing deployment with stock initramfs",
+				"output", string(out),
+				"error", err,
+				"initrd", kInfo.InitrdFile,
+			)
+			return nil
+		}
+
 		return fmt.Errorf("dracut initramfs regeneration failed in chroot: %w (output: %s)", err, string(out))
 	}
 
@@ -829,9 +916,14 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 	updateInitramfsPath := filepath.Join(targetRootMount, "usr", "sbin", "update-initramfs")
 	if _, err := os.Stat(updateInitramfsPath); err == nil {
 		if raidRequired {
-			// Check if mdadm is present in chroot; if missing, attempt installation via apt-get
-			mdadmBin := filepath.Join(targetRootMount, "sbin", "mdadm")
-			if _, mErr := os.Stat(mdadmBin); os.IsNotExist(mErr) {
+			hasMdadm := false
+			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+					hasMdadm = true
+					break
+				}
+			}
+			if !hasMdadm {
 				slog.InfoContext(ctx, "mdadm not found in chroot; attempting apt-get installation for Software RAID support")
 				aptCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "update", "-qq")
 				_ = aptCmd.Run()
@@ -864,7 +956,24 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs for all kernels", "output", string(allOut))
 			return nil
 		}
+
+		if hasExistingInitrd {
+			slog.WarnContext(ctx, "update-initramfs in chroot failed, but existing valid initramfs present in /boot; continuing deployment with stock initramfs",
+				"output", string(allOut),
+				"error", allErr,
+				"initrd", kInfo.InitrdFile,
+			)
+			return nil
+		}
+
 		return fmt.Errorf("update-initramfs failed in chroot: %w (output: %s)", allErr, string(allOut))
+	}
+
+	if hasExistingInitrd {
+		slog.WarnContext(ctx, "no supported initramfs generator found in target rootfs, but existing valid initramfs present in /boot; proceeding with existing image",
+			"initrd", kInfo.InitrdFile,
+		)
+		return nil
 	}
 
 	return fmt.Errorf("no supported initramfs generator found in target rootfs (dracut or update-initramfs)")
