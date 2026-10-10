@@ -131,6 +131,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			"-n", "1:2048:+1024M", "-t", "1:ef00", "-c", "1:EFI System Partition",
 			"-n", "2:0:+1024M", "-t", "2:fd00", "-c", "2:Linux Software RAID boot",
 			"-n", "3:0:0", "-t", "3:fd00", "-c", "3:Linux Software RAID data",
+			"-A", "1:set:2",
 			realDisk,
 		)
 		if out, err := partCmd.CombinedOutput(); err != nil {
@@ -139,6 +140,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
 				"mkpart", "ESP", "fat32", "1MiB", "1025MiB",
 				"set", "1", "esp", "on",
+				"set", "1", "boot", "on",
 				"mkpart", "boot", "ext4", "1025MiB", "2049MiB",
 				"set", "2", "raid", "on",
 				"mkpart", "data", "ext4", "2049MiB", "100%",
@@ -149,6 +151,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			}
 		}
 
+		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
 		settlePartitions(ctx, realDisk)
 
 		espPart := resolvePartitionPath(realDisk, 1)
@@ -319,6 +322,7 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		"-n", "1:2048:+512M", "-t", "1:ef00", "-c", "1:EFI System Partition",
 		"-n", "2:0:+1024M", "-t", "2:8300", "-c", "2:boot",
 		"-n", "3:0:0", "-t", "3:8e00", "-c", "3:Linux LVM",
+		"-A", "1:set:2",
 		realDisk,
 	)
 	if out, err := partCmd.CombinedOutput(); err != nil {
@@ -327,6 +331,7 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
 			"mkpart", "ESP", "fat32", "1MiB", "513MiB",
 			"set", "1", "esp", "on",
+			"set", "1", "boot", "on",
 			"mkpart", "boot", "ext4", "513MiB", "1537MiB",
 			"mkpart", "lvm", "1537MiB", "100%",
 			"set", "3", "lvm", "on",
@@ -336,6 +341,7 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		}
 	}
 
+	_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
 	settlePartitions(ctx, realDisk)
 
 	espPart := resolvePartitionPath(realDisk, 1)

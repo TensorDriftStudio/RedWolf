@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,15 @@ func ConfigureBootloader(ctx context.Context, targetDrivePath string, osType dom
 		"real_disk", realDisk,
 		"os", osType,
 	)
+
+	// If system booted in Legacy BIOS mode, NVRAM EFI variables are inaccessible
+	if _, err := os.Stat("/sys/firmware/efi"); os.IsNotExist(err) {
+		slog.WarnContext(ctx, "system is running in Legacy BIOS mode; EFI NVRAM variables are inaccessible (configure VM/system firmware to UEFI to enable native NVRAM boot)",
+			"target_drive", targetDrivePath,
+			"real_disk", realDisk,
+		)
+		return nil
+	}
 
 	// Determine EFI loader path based on distribution
 	loaderPath := `\EFI\BOOT\BOOTX64.EFI`
@@ -181,11 +191,15 @@ func detectEFIPartition(ctx context.Context, realDisk string, osType ...domain.O
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
+	// Target disks partitioned by RedWolf always place the EFI system partition at partition 1.
+	// Only source cloud raw images attached via loopback devices may have partitions 2 (AlmaLinux) or 15 (Debian).
 	defaultPart := 1
-	if strings.Contains(strings.ToLower(string(targetOS)), "debian") {
-		defaultPart = 15
-	} else if strings.Contains(strings.ToLower(string(targetOS)), "almalinux") {
-		defaultPart = 2
+	if strings.Contains(realDisk, "loop") {
+		if strings.Contains(strings.ToLower(string(targetOS)), "debian") {
+			defaultPart = 15
+		} else if strings.Contains(strings.ToLower(string(targetOS)), "almalinux") {
+			defaultPart = 2
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,PARTTYPE,FSTYPE,LABEL,TYPE", realDisk)

@@ -562,6 +562,86 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 			_ = os.WriteFile(gp, []byte(content), 0644)
 		}
 	}
+
+	// 3. Update all EFI stub grub.cfg files on the mounted EFI System Partition (/boot/efi/EFI)
+	newBootUUID := getPartitionUUID(ctx, layout.BootPartition)
+	if newBootUUID == "" {
+		newBootUUID = newRootUUID
+	}
+
+	efiBase := filepath.Join(targetRootMount, "boot", "efi", "EFI")
+	if efiEntries, err := os.ReadDir(efiBase); err == nil {
+		var shimPath, grubBinPath string
+
+		for _, entry := range efiEntries {
+			if !entry.IsDir() {
+				continue
+			}
+			subDir := filepath.Join(efiBase, entry.Name())
+			subCfg := filepath.Join(subDir, "grub.cfg")
+
+			if sPath := filepath.Join(subDir, "shimx64.efi"); shimPath == "" {
+				if _, err := os.Stat(sPath); err == nil {
+					shimPath = sPath
+				}
+			}
+			if gPath := filepath.Join(subDir, "grubx64.efi"); grubBinPath == "" {
+				if _, err := os.Stat(gPath); err == nil {
+					grubBinPath = gPath
+				}
+			}
+
+			if data, err := os.ReadFile(subCfg); err == nil && newBootUUID != "" {
+				cfgStr := string(data)
+				lines := strings.Split(cfgStr, "\n")
+				var newLines []string
+				hasSearch := false
+				for _, l := range lines {
+					trimmed := strings.TrimSpace(l)
+					if strings.HasPrefix(trimmed, "search ") && strings.Contains(trimmed, "--fs-uuid") {
+						hasSearch = true
+						parts := strings.Fields(trimmed)
+						if len(parts) >= 3 {
+							parts[len(parts)-1] = newBootUUID
+							newLines = append(newLines, strings.Join(parts, " "))
+							continue
+						}
+					}
+					newLines = append(newLines, l)
+				}
+				if !hasSearch && newBootUUID != "" {
+					stub := fmt.Sprintf("insmod part_gpt\ninsmod mdraid1x\ninsmod xfs\ninsmod ext2\nsearch --no-floppy --fs-uuid --set=dev %s\nset prefix=($dev)/grub2\nexport $prefix\nconfigfile $prefix/grub.cfg\n", newBootUUID)
+					_ = os.WriteFile(subCfg, []byte(stub), 0644)
+				} else {
+					_ = os.WriteFile(subCfg, []byte(strings.Join(newLines, "\n")), 0644)
+				}
+			}
+		}
+
+		// Ensure fallback /boot/efi/EFI/BOOT exists with working BOOTX64.EFI and grub.cfg
+		bootDir := filepath.Join(efiBase, "BOOT")
+		_ = os.MkdirAll(bootDir, 0755)
+
+		fallbackLoader := filepath.Join(bootDir, "BOOTX64.EFI")
+		if _, err := os.Stat(fallbackLoader); os.IsNotExist(err) {
+			if shimPath != "" {
+				_ = exec.CommandContext(ctx, "cp", "-a", shimPath, fallbackLoader).Run()
+			} else if grubBinPath != "" {
+				_ = exec.CommandContext(ctx, "cp", "-a", grubBinPath, fallbackLoader).Run()
+			}
+		}
+
+		fallbackGrubBin := filepath.Join(bootDir, "grubx64.efi")
+		if _, err := os.Stat(fallbackGrubBin); os.IsNotExist(err) && grubBinPath != "" {
+			_ = exec.CommandContext(ctx, "cp", "-a", grubBinPath, fallbackGrubBin).Run()
+		}
+
+		fallbackCfg := filepath.Join(bootDir, "grub.cfg")
+		if newBootUUID != "" {
+			fallbackContent := fmt.Sprintf("insmod part_gpt\ninsmod mdraid1x\ninsmod xfs\ninsmod ext2\nsearch --no-floppy --fs-uuid --set=dev %s\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
+			_ = os.WriteFile(fallbackCfg, []byte(fallbackContent), 0644)
+		}
+	}
 }
 
 func getPartitionUUID(ctx context.Context, partDev string) string {

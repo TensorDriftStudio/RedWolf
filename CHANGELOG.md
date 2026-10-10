@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.9] - 2026-10-10 (UEFI Bootloader UUID & Fallback Resilience Release)
+
+### Fixed
+- **UEFI Bootloader Configuration & Search Repair:**
+  - Repaired `updateBootloaderConfigs` in `internal/agent/provision/executor.go` to scan and update all EFI stub configuration files under `/boot/efi/EFI/*/grub.cfg`. Replaced `--fs-uuid` references with the newly generated `/boot` partition UUID so GRUB stage 1 locates `/boot/grub2/grub.cfg` on `/dev/md0` or custom `/boot` partitions.
+  - Injected required filesystem and volume modules (`insmod part_gpt`, `insmod mdraid1x`, `insmod xfs`, `insmod ext2`) into EFI stub configs.
+- **Fallback Bootloader Resilience (`BOOTX64.EFI`):**
+  - Guaranteed creation and synchronization of standard UEFI fallback boot files `/EFI/BOOT/BOOTX64.EFI`, `grubx64.efi`, and `grub.cfg` across all EFI System Partitions (ESPs) on RAID 1 arrays (`syncMemberESPs`), ensuring VMs and servers boot properly even when NVRAM boot entries are cleared or bypassed by hypervisors.
+- **Accurate EFI Partition Detection in `efibootmgr`:**
+  - Fixed `detectEFIPartition` in `internal/agent/provision/bootloader.go`: On physical and virtual drives, RedWolf formats the ESP as Partition 1 (`p1` or `1`). Removed erroneous default fallback to partition 2 or 15 on real disks.
+  - Added EFI environment verification (`/sys/firmware/efi`) in `ConfigureBootloader`, providing clear diagnostic warnings if the discovery agent was booted in Legacy BIOS mode.
+- **Protective MBR Boot Flag Enforcement:**
+  - Enabled active PMBR boot flag (`parted disk_set pmbr_boot on` and `sgdisk -A 1:set:2`) on target GPT disks for compatibility with legacy firmware inspecting MBR sector 0.
+
+---
+
 ## [1.2.8] - 2026-10-10 (Storage Extraction & Loop Container Stream Resilience Release)
 
 ### Fixed
