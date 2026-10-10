@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-10-10 (Universal Dual BIOS & UEFI Hybrid Storage Architecture Release)
+
+### Added
+- **Universal Dual BIOS & UEFI Hybrid GPT Layout:**
+  - Implemented 4-partition hybrid GPT architecture on Software RAID and LVM drives:
+    - Partition 1: BIOS Boot Partition (`ef02` / `bios_grub`, 1 MiB) for Legacy BIOS GRUB embedding.
+    - Partition 2: EFI System Partition (`ef00`, 1024 MiB) for native UEFI firmware boot.
+    - Partition 3: `/boot` RAID array (`/dev/md0` with metadata 1.0) formatted with native `ext4`.
+    - Partition 4: Data / LVM volume group (`/dev/md1` / `vg_system`).
+- **Legacy BIOS MBR Bootloader Installation (`InstallBIOSBootloader`):**
+  - Integrated native `grub-bios` (`i386-pc`) bootloader deployment onto Sector 0 and `bios_grub` of all target drives, with fallback chroot execution via `grub2-install`/`grub-install`.
+  - Target disks are now simultaneously bootable under both Legacy BIOS and UEFI firmware modes.
+- **Dynamic Firmware-Aware UI Partitioning Scheme:**
+  - Updated `ProvisioningWizard` to inspect detected server node firmware mode (`node.firmwareMode`).
+  - Corrected partitioning preset labels and descriptions: displays `Standard (BIOS MBR + Root)` with `BIOS Boot (1MB)` for BIOS nodes, and `Standard (EFI + Root)` with `ESP (1024MB)` for UEFI nodes.
+  - Added visual firmware mode indicator badge (`UEFI` / `BIOS`) directly in the provisioning modal header.
+
+### Fixed
+- **Software RAID Bootloader Filesystem Compatibility:**
+  - Standardized `/boot` filesystem on Software RAID 1 to `ext4` with metadata 1.0, eliminating GRUB XFS module dependency and `bigtime`/`inobtcount` incompatibility.
+- **Resilient Multi-Path EFI Stub Search:**
+  - Enhanced `/boot/efi/EFI/*/grub.cfg` and fallback `/boot/efi/EFI/BOOT/grub.cfg` with defensive fallback chains (`search --fs-uuid`, `search --label boot`, direct `hd0,gpt3` fallback, and multiple prefix checks).
+
+---
+
 ## [1.2.9] - 2026-10-10 (UEFI Bootloader UUID & Fallback Resilience Release)
 
 ### Fixed

@@ -191,9 +191,10 @@ func detectEFIPartition(ctx context.Context, realDisk string, osType ...domain.O
 	if len(osType) > 0 {
 		targetOS = osType[0]
 	}
-	// Target disks partitioned by RedWolf always place the EFI system partition at partition 1.
-	// Only source cloud raw images attached via loopback devices may have partitions 2 (AlmaLinux) or 15 (Debian).
-	defaultPart := 1
+	// Target disks partitioned by RedWolf place the EFI system partition at partition 2
+	// (partition 1 is the 1MB BIOS boot partition).
+	// Source cloud raw images attached via loopback devices have partition 2 (AlmaLinux) or 15 (Debian).
+	defaultPart := 2
 	if strings.Contains(realDisk, "loop") {
 		if strings.Contains(strings.ToLower(string(targetOS)), "debian") {
 			defaultPart = 15
@@ -279,4 +280,74 @@ func extractTrailingDigits(s string) int {
 		return 0
 	}
 	return val
+}
+
+// InstallBIOSBootloader installs the GRUB MBR stage 1 bootloader into Sector 0
+// and embeds core.img into the BIOS Boot Partition (part 1) on all target drives.
+func InstallBIOSBootloader(ctx context.Context, targetDrives []string, bootMount, targetRootMount string) error {
+	for _, drive := range targetDrives {
+		realDisk, err := filepath.EvalSymlinks(drive)
+		if err != nil {
+			realDisk = drive
+		}
+
+		slog.InfoContext(ctx, "installing legacy BIOS MBR bootloader onto drive",
+			"target_drive", drive,
+			"real_disk", realDisk,
+		)
+
+		var installed bool
+
+		// Method 1: Discovery Agent native grub-install (packaged via grub-bios)
+		if _, err := exec.LookPath("grub-install"); err == nil {
+			args := []string{
+				"--target=i386-pc",
+				"--recheck",
+				"--force",
+			}
+			if bootMount != "" {
+				args = append(args, fmt.Sprintf("--boot-directory=%s", bootMount))
+			}
+			args = append(args, realDisk)
+			cmd := exec.CommandContext(ctx, "grub-install", args...)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				slog.InfoContext(ctx, "successfully installed BIOS bootloader via agent grub-install", "disk", realDisk)
+				installed = true
+			} else {
+				slog.DebugContext(ctx, "agent grub-install returned error", "disk", realDisk, "error", err, "output", string(out))
+			}
+		}
+
+		// Method 2: Target rootfs chroot grub2-install / grub-install
+		if !installed && targetRootMount != "" {
+			binds := []string{"/dev", "/proc", "/sys"}
+			for _, b := range binds {
+				targetB := filepath.Join(targetRootMount, b)
+				_ = os.MkdirAll(targetB, 0755)
+				_ = exec.CommandContext(ctx, "mount", "--bind", b, targetB).Run()
+			}
+
+			for _, binary := range []string{"grub2-install", "grub-install"} {
+				chrootCmd := exec.CommandContext(ctx, "chroot", targetRootMount, binary, "--target=i386-pc", "--recheck", "--force", realDisk)
+				out, err := chrootCmd.CombinedOutput()
+				if err == nil {
+					slog.InfoContext(ctx, "successfully installed BIOS bootloader via chroot", "binary", binary, "disk", realDisk)
+					installed = true
+					break
+				} else {
+					slog.DebugContext(ctx, "chroot install attempt failed", "binary", binary, "error", err, "output", string(out))
+				}
+			}
+
+			for i := len(binds) - 1; i >= 0; i-- {
+				_ = exec.CommandContext(context.Background(), "umount", filepath.Join(targetRootMount, binds[i])).Run()
+			}
+		}
+
+		if !installed {
+			slog.WarnContext(ctx, "could not execute grub-install for BIOS MBR (system will boot via UEFI or requires manual bootloader installation)", "disk", realDisk)
+		}
+	}
+	return nil
 }

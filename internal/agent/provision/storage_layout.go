@@ -122,15 +122,17 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			slog.WarnContext(ctx, "pre-wipe warning on raid drive", "drive", realDisk, "error", err)
 		}
 
-		// Partition layout:
-		// Part 1: ESP (1024 MiB) - ef00
-		// Part 2: /boot RAID (1024 MiB) - fd00
-		// Part 3: Data/LVM RAID (Remainder) - fd00
+		// Partition layout (Universal BIOS + UEFI dual-boot architecture):
+		// Part 1: BIOS Boot Partition (1 MiB) - ef02
+		// Part 2: ESP (1024 MiB) - ef00
+		// Part 3: /boot RAID (1024 MiB) - fd00
+		// Part 4: Data/LVM RAID (Remainder) - fd00
 		_ = exec.CommandContext(ctx, "sgdisk", "-Z", realDisk).Run()
 		partCmd := exec.CommandContext(ctx, "sgdisk",
-			"-n", "1:2048:+1024M", "-t", "1:ef00", "-c", "1:EFI System Partition",
-			"-n", "2:0:+1024M", "-t", "2:fd00", "-c", "2:Linux Software RAID boot",
-			"-n", "3:0:0", "-t", "3:fd00", "-c", "3:Linux Software RAID data",
+			"-n", "1:2048:+1M", "-t", "1:ef02", "-c", "1:BIOS Boot Partition",
+			"-n", "2:0:+1024M", "-t", "2:ef00", "-c", "2:EFI System Partition",
+			"-n", "3:0:+1024M", "-t", "3:fd00", "-c", "3:Linux Software RAID boot",
+			"-n", "4:0:0", "-t", "4:fd00", "-c", "4:Linux Software RAID data",
 			"-A", "1:set:2",
 			realDisk,
 		)
@@ -138,13 +140,15 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 			slog.WarnContext(ctx, "sgdisk partition warning on raid drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
 			_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
 			partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
-				"mkpart", "ESP", "fat32", "1MiB", "1025MiB",
-				"set", "1", "esp", "on",
-				"set", "1", "boot", "on",
-				"mkpart", "boot", "ext4", "1025MiB", "2049MiB",
-				"set", "2", "raid", "on",
-				"mkpart", "data", "ext4", "2049MiB", "100%",
+				"mkpart", "bios_grub", "1MiB", "2MiB",
+				"set", "1", "bios_grub", "on",
+				"mkpart", "ESP", "fat32", "2MiB", "1026MiB",
+				"set", "2", "esp", "on",
+				"set", "2", "boot", "on",
+				"mkpart", "boot", "ext4", "1026MiB", "2050MiB",
 				"set", "3", "raid", "on",
+				"mkpart", "data", "ext4", "2050MiB", "100%",
+				"set", "4", "raid", "on",
 			)
 			if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
 				return nil, fmt.Errorf("failed creating GPT partitions on RAID drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
@@ -154,10 +158,14 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
 		settlePartitions(ctx, realDisk)
 
-		espPart := resolvePartitionPath(realDisk, 1)
-		bootPart := resolvePartitionPath(realDisk, 2)
-		dataPart := resolvePartitionPath(realDisk, 3)
+		biosPart := resolvePartitionPath(realDisk, 1)
+		espPart := resolvePartitionPath(realDisk, 2)
+		bootPart := resolvePartitionPath(realDisk, 3)
+		dataPart := resolvePartitionPath(realDisk, 4)
 
+		if err := waitForDevice(ctx, biosPart, 5*time.Second); err != nil {
+			slog.DebugContext(ctx, "waiting for bios boot partition", "partition", biosPart, "error", err)
+		}
 		if err := waitForDevice(ctx, espPart, 5*time.Second); err != nil {
 			return nil, fmt.Errorf("failed waiting for ESP partition %s: %w", espPart, err)
 		}
@@ -201,20 +209,9 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 	}
 	_ = waitForDevice(ctx, bootMD, 5*time.Second)
 
-	bootFsType := "xfs"
-	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
-		bootFsType = "ext4"
-		if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootMD).CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("failed formatting boot RAID %s with ext4: %w (output: %s)", bootMD, err, string(out))
-		}
-	} else {
-		if out, err := exec.CommandContext(ctx, "mkfs.xfs", "-f", bootMD).CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "xfs formatting warning on boot RAID; attempting ext4 fallback", "output", string(out))
-			if fbOut, fbErr := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootMD).CombinedOutput(); fbErr != nil {
-				return nil, fmt.Errorf("failed formatting boot RAID %s: %w (output: %s; ext4 fallback: %s)", bootMD, fbErr, string(out), string(fbOut))
-			}
-			bootFsType = "ext4"
-		}
+	bootFsType := "ext4"
+	if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-L", "boot", bootMD).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed formatting boot RAID %s with ext4: %w (output: %s)", bootMD, err, string(out))
 	}
 
 	// Step 2: Create Data/Root RAID array on /dev/md1
@@ -313,15 +310,17 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		slog.WarnContext(ctx, "pre-wipe warning on LVM target drive", "drive", realDisk, "error", err)
 	}
 
-	// Layout:
-	// Part 1: ESP (512M) - ef00
-	// Part 2: /boot (1024M) - 8300
-	// Part 3: LVM PV (remainder) - 8e00
+	// Universal Hybrid Partition layout (BIOS + UEFI dual-boot architecture):
+	// Part 1: BIOS Boot (1M) - ef02
+	// Part 2: ESP (1024M) - ef00
+	// Part 3: /boot (1024M) - 8300 (ext4)
+	// Part 4: Linux LVM (remainder) - 8e00
 	_ = exec.CommandContext(ctx, "sgdisk", "-Z", realDisk).Run()
 	partCmd := exec.CommandContext(ctx, "sgdisk",
-		"-n", "1:2048:+512M", "-t", "1:ef00", "-c", "1:EFI System Partition",
-		"-n", "2:0:+1024M", "-t", "2:8300", "-c", "2:boot",
-		"-n", "3:0:0", "-t", "3:8e00", "-c", "3:Linux LVM",
+		"-n", "1:2048:+1M", "-t", "1:ef02", "-c", "1:BIOS Boot Partition",
+		"-n", "2:0:+1024M", "-t", "2:ef00", "-c", "2:EFI System Partition",
+		"-n", "3:0:+1024M", "-t", "3:8300", "-c", "3:boot",
+		"-n", "4:0:0", "-t", "4:8e00", "-c", "4:Linux LVM",
 		"-A", "1:set:2",
 		realDisk,
 	)
@@ -329,12 +328,14 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 		slog.WarnContext(ctx, "sgdisk partition warning on lvm drive, trying parted fallback", "drive", realDisk, "error", err, "output", string(out))
 		_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "mklabel", "gpt").Run()
 		partedCmd := exec.CommandContext(ctx, "parted", "-s", "-a", "optimal", realDisk,
-			"mkpart", "ESP", "fat32", "1MiB", "513MiB",
-			"set", "1", "esp", "on",
-			"set", "1", "boot", "on",
-			"mkpart", "boot", "ext4", "513MiB", "1537MiB",
-			"mkpart", "lvm", "1537MiB", "100%",
-			"set", "3", "lvm", "on",
+			"mkpart", "bios_grub", "1MiB", "2MiB",
+			"set", "1", "bios_grub", "on",
+			"mkpart", "ESP", "fat32", "2MiB", "1026MiB",
+			"set", "2", "esp", "on",
+			"set", "2", "boot", "on",
+			"mkpart", "boot", "ext4", "1026MiB", "2050MiB",
+			"mkpart", "lvm", "2050MiB", "100%",
+			"set", "4", "lvm", "on",
 		)
 		if pOut, pErr := partedCmd.CombinedOutput(); pErr != nil {
 			return nil, fmt.Errorf("failed creating GPT partitions on LVM drive %s (sgdisk: %v; parted: %w output: %s)", realDisk, err, pErr, string(pOut))
@@ -344,10 +345,14 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 	_ = exec.CommandContext(ctx, "parted", "-s", realDisk, "disk_set", "pmbr_boot", "on").Run()
 	settlePartitions(ctx, realDisk)
 
-	espPart := resolvePartitionPath(realDisk, 1)
-	bootPart := resolvePartitionPath(realDisk, 2)
-	lvmPart := resolvePartitionPath(realDisk, 3)
+	biosPart := resolvePartitionPath(realDisk, 1)
+	espPart := resolvePartitionPath(realDisk, 2)
+	bootPart := resolvePartitionPath(realDisk, 3)
+	lvmPart := resolvePartitionPath(realDisk, 4)
 
+	if err := waitForDevice(ctx, biosPart, 5*time.Second); err != nil {
+		slog.DebugContext(ctx, "waiting for bios boot partition", "partition", biosPart, "error", err)
+	}
 	if err := waitForDevice(ctx, espPart, 5*time.Second); err != nil {
 		return nil, fmt.Errorf("failed waiting for ESP partition %s: %w", espPart, err)
 	}
@@ -360,20 +365,9 @@ func setupSingleDiskLVM(ctx context.Context, targetDrive string, cfg domain.Depl
 
 	// Format ESP and Boot partitions
 	_ = exec.CommandContext(ctx, "mkfs.vfat", "-F32", espPart).Run()
-	bootFsType := "xfs"
-	if strings.Contains(strings.ToLower(string(cfg.OS)), "debian") {
-		bootFsType = "ext4"
-		if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("failed formatting boot partition %s with ext4: %w (output: %s)", bootPart, err, string(out))
-		}
-	} else {
-		if out, err := exec.CommandContext(ctx, "mkfs.xfs", "-f", bootPart).CombinedOutput(); err != nil {
-			slog.WarnContext(ctx, "xfs formatting warning on boot partition; falling back to ext4", "partition", bootPart, "output", string(out))
-			if fbOut, fbErr := exec.CommandContext(ctx, "mkfs.ext4", "-F", bootPart).CombinedOutput(); fbErr != nil {
-				return nil, fmt.Errorf("failed formatting boot partition %s: %w (output: %s; ext4 fallback: %s)", bootPart, fbErr, string(out), string(fbOut))
-			}
-			bootFsType = "ext4"
-		}
+	bootFsType := "ext4"
+	if out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-L", "boot", bootPart).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed formatting boot partition %s with ext4: %w (output: %s)", bootPart, err, string(out))
 	}
 
 	lvmRes, err := buildLVMOnBlockDevice(ctx, lvmPart, cfg)

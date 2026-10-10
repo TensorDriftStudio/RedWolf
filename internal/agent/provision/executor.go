@@ -290,7 +290,13 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		slog.WarnContext(ctx, "non-fatal warning injecting security credentials", "error", err)
 	}
 
-	// 11. Unmount all target partitions cleanly
+	// 11. Install Legacy BIOS MBR bootloader on all target drives (supports dual BIOS & UEFI booting)
+	_ = reporter.Report(ctx, nodeID, 88, "Installing BIOS MBR bootloader...", "Writing MBR boot code and core image to target drives")
+	if err := InstallBIOSBootloader(ctx, layout.ESPDrives, bootMount, targetRootMount); err != nil {
+		slog.WarnContext(ctx, "non-fatal warning during BIOS bootloader installation", "error", err)
+	}
+
+	// 12. Unmount all target partitions cleanly
 	_ = reporter.Report(ctx, nodeID, 90, "Finalizing storage writes...", "Flushing disk buffers and unmounting target volumes")
 	unmountAllUnder(ctx, targetRootMount)
 
@@ -591,30 +597,9 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 				}
 			}
 
-			if data, err := os.ReadFile(subCfg); err == nil && newBootUUID != "" {
-				cfgStr := string(data)
-				lines := strings.Split(cfgStr, "\n")
-				var newLines []string
-				hasSearch := false
-				for _, l := range lines {
-					trimmed := strings.TrimSpace(l)
-					if strings.HasPrefix(trimmed, "search ") && strings.Contains(trimmed, "--fs-uuid") {
-						hasSearch = true
-						parts := strings.Fields(trimmed)
-						if len(parts) >= 3 {
-							parts[len(parts)-1] = newBootUUID
-							newLines = append(newLines, strings.Join(parts, " "))
-							continue
-						}
-					}
-					newLines = append(newLines, l)
-				}
-				if !hasSearch && newBootUUID != "" {
-					stub := fmt.Sprintf("insmod part_gpt\ninsmod mdraid1x\ninsmod xfs\ninsmod ext2\nsearch --no-floppy --fs-uuid --set=dev %s\nset prefix=($dev)/grub2\nexport $prefix\nconfigfile $prefix/grub.cfg\n", newBootUUID)
-					_ = os.WriteFile(subCfg, []byte(stub), 0644)
-				} else {
-					_ = os.WriteFile(subCfg, []byte(strings.Join(newLines, "\n")), 0644)
-				}
+			if newBootUUID != "" {
+				stub := fmt.Sprintf("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\nsearch --no-floppy --fs-uuid --set=dev %s\nif [ -z \"$dev\" ]; then\n    search --no-floppy --label --set=dev boot\nfi\nif [ -z \"$dev\" ]; then\n    set dev=hd0,gpt3\nfi\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub2\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
+				_ = os.WriteFile(subCfg, []byte(stub), 0644)
 			}
 		}
 
@@ -638,7 +623,7 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 
 		fallbackCfg := filepath.Join(bootDir, "grub.cfg")
 		if newBootUUID != "" {
-			fallbackContent := fmt.Sprintf("insmod part_gpt\ninsmod mdraid1x\ninsmod xfs\ninsmod ext2\nsearch --no-floppy --fs-uuid --set=dev %s\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
+			fallbackContent := fmt.Sprintf("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\nsearch --no-floppy --fs-uuid --set=dev %s\nif [ -z \"$dev\" ]; then\n    search --no-floppy --label --set=dev boot\nfi\nif [ -z \"$dev\" ]; then\n    set dev=hd0,gpt3\nfi\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub2\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
 			_ = os.WriteFile(fallbackCfg, []byte(fallbackContent), 0644)
 		}
 	}

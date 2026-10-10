@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.9%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.3.0%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.2.9` — Immutable release version
+  * `wolverandover/redwolf:1.3.0` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.2.9 — UEFI Bootloader UUID & Fallback Resilience (Current)
+### ✅ Version 1.3.0 — Universal Dual BIOS & UEFI Hybrid Storage Architecture (Current)
+- [x] **4-Partition Hybrid GPT Layout:** Standardized 4-partition GPT layout (BIOS Boot `ef02` + ESP `ef00` + ext4 `/boot` + Data/LVM) on Software RAID 1 and LVM targets.
+- [x] **Legacy BIOS MBR Installation:** Integrated native `grub-bios` (`i386-pc`) MBR installation on all target disks for seamless boot on Legacy BIOS motherboards and hypervisors.
+- [x] **Firmware-Aware UI Scheme:** Dynamically adapts partition presets in `ProvisioningWizard` to show `Standard (BIOS MBR + Root)` for BIOS nodes and `Standard (EFI + Root)` for UEFI nodes.
+- [x] **Universal ext4 Boot Filesystem:** Formatted `/boot` RAID 1 with `ext4` and metadata 1.0, ensuring native readability by all BIOS and UEFI GRUB stages.
+
+### ✅ Version 1.2.9 — UEFI Bootloader UUID & Fallback Resilience
 - [x] **UEFI Stub Search UUID Repair:** Repaired `/boot/efi/EFI/*/grub.cfg` to point `--fs-uuid` to the target `/boot` filesystem UUID (`/dev/md0` or dedicated `/boot`).
 - [x] **Fallback Bootloader Sync:** Synchronized `/EFI/BOOT/BOOTX64.EFI`, `grubx64.efi`, and `grub.cfg` across all ESP mirrors for hypervisors bypassing NVRAM.
 - [x] **Deterministic ESP Partition Detection:** Ensured `detectEFIPartition` correctly targets partition 1 on real drives, with Legacy BIOS detection warning.

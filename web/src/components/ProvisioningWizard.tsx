@@ -326,6 +326,13 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
         <div className="border-b border-[#212836] bg-[#151b24] px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <VendorBadge vendor={node.vendor} />
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border uppercase ${
+              (node.firmwareMode || '').toUpperCase() === 'UEFI'
+                ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20'
+                : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+            }`}>
+              {node.firmwareMode || 'BIOS'}
+            </span>
             <h2 className="text-xs font-semibold text-white">
               {activeDeploy ? 'Provisioning Status' : 'Deploy OS'} — <span className="font-mono">{node.model}</span> (SN: {node.serialNumber})
             </h2>
@@ -618,9 +625,13 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                           : 'border-[#212836] bg-[#0f1218]'
                       }`}
                     >
-                      <div className="font-medium text-white text-xs">Standard (EFI + Root)</div>
+                      <div className="font-medium text-white text-xs">
+                        {(node.firmwareMode || '').toUpperCase() === 'UEFI' ? 'Standard (EFI + Root)' : 'Standard (BIOS MBR + Root)'}
+                      </div>
                       <div className="text-[10px] text-slate-400 mt-0.5">
-                        ESP (512MB) + Root Partition auto-expanded
+                        {(node.firmwareMode || '').toUpperCase() === 'UEFI'
+                          ? 'ESP (1024MB) + Root Partition auto-expanded'
+                          : 'BIOS Boot (1MB) + Root Partition auto-expanded'}
                       </div>
                     </div>
                     <div
@@ -633,7 +644,9 @@ export const ProvisioningWizard: React.FC<ProvisioningWizardProps> = ({ node, on
                     >
                       <div className="font-medium text-white text-xs">LVM (Volume Manager)</div>
                       <div className="text-[10px] text-slate-400 mt-0.5">
-                        Volume Group `vg_system` with custom Logical Volumes
+                        {(node.firmwareMode || '').toUpperCase() === 'UEFI'
+                          ? 'ESP + /boot + Volume Group `vg_system`'
+                          : 'BIOS Boot + /boot + Volume Group `vg_system`'}
                       </div>
                     </div>
                   </div>
