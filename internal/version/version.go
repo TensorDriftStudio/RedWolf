@@ -7,7 +7,7 @@ import (
 
 var (
 	// Version is the current SemVer release of RedWolf
-	Version = "v1.3.3"
+	Version = "v1.3.4"
 	// GitCommit is injected via -ldflags during build
 	GitCommit = "dev"
 	// BuildDate is injected via -ldflags during build

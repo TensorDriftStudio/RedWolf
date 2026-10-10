@@ -492,8 +492,8 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 		}
 	}
 
-	// Use console=tty0 to avoid hangs on virtual machines (e.g. VMware) lacking physical serial ports
-	parts = append(parts, "ro", "console=tty0", "systemd.show_status=1")
+	// Use console=tty0 and disable plymouth to prevent hangs on virtual machines and show live boot status
+	parts = append(parts, "ro", "console=tty0", "plymouth.enable=0", "systemd.show_status=1")
 	return strings.Join(parts, " ")
 }
 

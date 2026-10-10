@@ -19,13 +19,18 @@ mkdir -p "$(dirname "$REDWOLF_DB_PATH")" "$REDWOLF_IMAGE_DIR" "$REDWOLF_TFTP_DIR
 
 # Seed / update embedded discovery boot assets into persistent image directory
 if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/assets/discovery/initramfs.img" ]; then
-    echo "📦 Synchronizing discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
+    echo "📦 Synchronizing embedded discovery boot assets to $REDWOLF_IMAGE_DIR/discovery..."
     mkdir -p "$REDWOLF_IMAGE_DIR/discovery"
-    cp -f -a /usr/share/redwolf/assets/discovery/* "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
+    cp -f -a /usr/share/redwolf/assets/discovery/. "$REDWOLF_IMAGE_DIR/discovery/" 2>/dev/null || true
+    if [ -f "/usr/share/redwolf/assets/discovery/.version" ]; then
+        cp -f "/usr/share/redwolf/assets/discovery/.version" "$REDWOLF_IMAGE_DIR/discovery/.version"
+    else
+        echo "${REDWOLF_RELEASE_VERSION:-v1.3.3}" > "$REDWOLF_IMAGE_DIR/discovery/.version"
+    fi
 fi
 
 # Automatic Discovery Assets Synchronization: Download or update official prebuilt release artifacts
-RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.3.3}"
+RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.3.4}"
 CURRENT_DISCOVERY_VER=""
 [ -f "$REDWOLF_IMAGE_DIR/discovery/.version" ] && CURRENT_DISCOVERY_VER="$(cat "$REDWOLF_IMAGE_DIR/discovery/.version" 2>/dev/null || true)"
 

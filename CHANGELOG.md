@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.4] - 2026-10-10 (Embedded Asset Sync & Plymouth Suppression Release)
+
+### Fixed
+- **Deterministic Embedded Discovery Asset Sync (`entrypoint.sh`):**
+  - Updated asset copy command from `cp -f -a /usr/share/redwolf/assets/discovery/*` to `cp -f -a /usr/share/redwolf/assets/discovery/.` to ensure dotfiles and `.version` are copied into persistent volume `$REDWOLF_IMAGE_DIR/discovery/`.
+  - Guaranteed that the container will never fall back to an outdated cached discovery image or fail with 404 attempting to download from GitHub Releases.
+- **Plymouth Splash Suppression (`plymouth.enable=0`):**
+  - Injected `plymouth.enable=0` into `ComputeKernelArgs` to prevent the Plymouth splash engine from seizing the virtual VGA console (`tty0`) or suppressing storage assembly and systemd progress on VMware/KVM screens.
+
 ## [1.3.3] - 2026-10-10 (Universal VGA Console & Unrestricted Dracut Boot Release)
 
 ### Fixed

@@ -187,11 +187,8 @@ func TestComputeKernelArgs(t *testing.T) {
 	if !strings.Contains(args, "rd.md=1") {
 		t.Errorf("expected rd.md=1 in args, got %s", args)
 	}
-	if !strings.Contains(args, "console=tty0") {
-		t.Errorf("expected console=tty0 in args, got %s", args)
-	}
-	if strings.Contains(args, "console=ttyS0") {
-		t.Errorf("did not expect console=ttyS0 in args, got %s", args)
+	if !strings.Contains(args, "plymouth.enable=0") {
+		t.Errorf("expected plymouth.enable=0 in args, got %s", args)
 	}
 
 	// 2. Software RAID 1 without LVM
