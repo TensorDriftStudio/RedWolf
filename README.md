@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.7%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.2.8%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.2.7` — Immutable release version
+  * `wolverandover/redwolf:1.2.8` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.2.7 — Software RAID mdadm Syntax Fix Release (Current)
+### ✅ Version 1.2.8 — Storage Extraction & Loop Container Stream Resilience (Current)
+- [x] **File Container Streaming:** Added support for streaming OS raw images directly to disk container files (`O_CREATE | O_TRUNC`) with parent directory creation.
+- [x] **Adaptive Temp Location:** Intelligent selection between in-memory RAM (`/tmp`) and target volume based on free space to avoid memory pressure.
+- [x] **Deterministic Resource Lifecycle:** Guaranteed immediate detachment of loop devices and deletion of raw image files right after filesystem synchronization.
+- [x] **Partition Settle Guards:** Added `settlePartitions` and `waitForDevice` synchronization guards for loop partition nodes before mounting.
+
+### ✅ Version 1.2.7 — Software RAID mdadm Syntax Fix Release
 - [x] **mdadm CLI Flag Conformance:** Removed unsupported `--batch` option from `mdadm --create` commands, preventing `exit status 2: unrecognized option: batch`.
 - [x] **Non-Interactive Array Assembly:** Preserved standard `--force` and `--run` flags for deterministic zero-touch Software RAID 1 array creation.
 

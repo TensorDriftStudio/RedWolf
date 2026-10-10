@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tensordriftstudio/redwolf/internal/domain"
@@ -223,13 +224,14 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 
 	// 4. Stream and unpack OS image to loop container
 	_ = reporter.Report(ctx, nodeID, 25, "Streaming distribution image...", "Streaming and decompressing raw OS image to loop container")
-	tmpImage := "/tmp/redwolf-cloud-image.raw"
+	tmpImage := selectTempImagePath(targetRootMount)
 	onProgress := func(pct int, writtenBytes int64, msg string) {
 		scaled := 25 + int(float64(pct)*0.4) // Scaled between 25% and 65%
 		_ = reporter.Report(ctx, nodeID, scaled, fmt.Sprintf("Streaming %s...", task.OS), msg)
 	}
 
 	if err := StreamImage(ctx, task.ImageURL, tmpImage, onProgress); err != nil {
+		_ = os.Remove(tmpImage)
 		return fmt.Errorf("failed streaming image: %w", err)
 	}
 	defer os.Remove(tmpImage)
@@ -239,6 +241,7 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 	loopCmd := exec.CommandContext(ctx, "losetup", "-P", "-r", "-f", "--show", tmpImage)
 	loopOut, err := loopCmd.CombinedOutput()
 	if err != nil {
+		_ = os.Remove(tmpImage)
 		return fmt.Errorf("losetup failed on %s: %w (output: %s)", tmpImage, err, string(loopOut))
 	}
 	loopDev := strings.TrimSpace(string(loopOut))
@@ -246,8 +249,7 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		_ = exec.CommandContext(context.Background(), "losetup", "-d", loopDev).Run()
 	}()
 
-	_ = exec.CommandContext(ctx, "partprobe", loopDev).Run()
-	time.Sleep(1 * time.Second)
+	settlePartitions(ctx, loopDev)
 
 	// 6. Copy files from source partitions into target filesystem hierarchy
 	sourceRootPart, err := extractImageToTarget(ctx, loopDev, targetRootMount, reporter, nodeID, task.OS)
@@ -255,8 +257,14 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		return fmt.Errorf("failed extracting source image to target: %w", err)
 	}
 
-	// 7. Update Bootloader root parameters (BLS entries / grub.cfg)
+	// Capture source root partition UUID before detaching loop device
 	sourceRootUUID := getPartitionUUID(ctx, sourceRootPart)
+
+	// Explicitly detach loop device and delete temporary image to free memory/disk immediately
+	_ = exec.CommandContext(ctx, "losetup", "-d", loopDev).Run()
+	_ = os.Remove(tmpImage)
+
+	// 7. Update Bootloader root parameters (BLS entries / grub.cfg)
 	updateBootloaderConfigs(ctx, targetRootMount, layout, sourceRootUUID)
 
 	// 8. Generate clean /etc/fstab
@@ -354,6 +362,7 @@ func extractImageToTarget(ctx context.Context, loopDev, targetRootMount string, 
 	if err != nil {
 		sourceRootPart = fallbackPartitionPath(loopDev, osType)
 	}
+	_ = waitForDevice(ctx, sourceRootPart, 5*time.Second)
 
 	srcRootMount := "/mnt/redwolf-source-root"
 	_ = os.MkdirAll(srcRootMount, 0755)
@@ -372,6 +381,7 @@ func extractImageToTarget(ctx context.Context, loopDev, targetRootMount string, 
 
 	// Source boot partition (partition 3 on AlmaLinux)
 	srcBootPart := resolvePartitionPath(loopDev, 3)
+	_ = waitForDevice(ctx, srcBootPart, 2*time.Second)
 	if _, err := os.Stat(srcBootPart); err == nil && !strings.Contains(strings.ToLower(string(osType)), "debian") {
 		srcBootMount := "/mnt/redwolf-source-boot"
 		_ = os.MkdirAll(srcBootMount, 0755)
@@ -387,6 +397,7 @@ func extractImageToTarget(ctx context.Context, loopDev, targetRootMount string, 
 	// Source EFI partition (partition 2 on AlmaLinux, 15 on Debian)
 	efiPartNum := detectEFIPartition(ctx, loopDev, osType)
 	srcEFIPart := resolvePartitionPath(loopDev, efiPartNum)
+	_ = waitForDevice(ctx, srcEFIPart, 2*time.Second)
 	if _, err := os.Stat(srcEFIPart); err == nil {
 		srcEFIMount := "/mnt/redwolf-source-efi"
 		_ = os.MkdirAll(srcEFIMount, 0755)
@@ -591,4 +602,33 @@ func unmountAllUnder(ctx context.Context, rootMount string) {
 		_ = exec.CommandContext(ctx, "umount", m).Run()
 	}
 	_ = exec.CommandContext(ctx, "umount", rootMount).Run()
+}
+
+// selectTempImagePath determines the safest location to store the unpacked OS image.
+// It prioritizes in-memory RAM (/tmp) if sufficient capacity exists (>= 3.5 GiB free)
+// to prevent disk wear, and defensively falls back to the target drive if RAM is constrained.
+func selectTempImagePath(targetRootMount string) string {
+	var tmpStat syscall.Statfs_t
+	var tmpFree int64
+	if err := syscall.Statfs("/tmp", &tmpStat); err == nil {
+		tmpFree = int64(tmpStat.Bavail) * int64(tmpStat.Bsize)
+	}
+
+	var targetStat syscall.Statfs_t
+	var targetFree int64
+	if err := syscall.Statfs(targetRootMount, &targetStat); err == nil {
+		targetFree = int64(targetStat.Bavail) * int64(targetStat.Bsize)
+	}
+
+	// Prefer in-memory /tmp if there is at least 3.5 GiB free for rapid in-RAM processing
+	if tmpFree >= 3500*1024*1024 {
+		return "/tmp/redwolf-cloud-image.raw"
+	}
+
+	// If target filesystem has more free space than /tmp and at least 2 GiB free, store on disk
+	if targetFree > tmpFree && targetFree >= 2000*1024*1024 {
+		return filepath.Join(targetRootMount, ".redwolf-cloud-image.raw")
+	}
+
+	return "/tmp/redwolf-cloud-image.raw"
 }

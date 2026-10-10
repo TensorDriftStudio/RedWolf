@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 // ProgressCallback notifies callers of transfer progress.
 type ProgressCallback func(percent int, writtenBytes int64, message string)
 
-// StreamImage streams and decompresses a cloud raw image directly to target block storage.
+// StreamImage streams and decompresses a cloud raw image directly to target block storage or disk container file.
 // It implements sparse block writes (skipping runs of zeros) to preserve drive endurance and maximize write speed.
 func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, onProgress ProgressCallback) error {
 	slog.InfoContext(ctx, "initiating sparse block stream to target drive",
@@ -26,8 +27,21 @@ func StreamImage(ctx context.Context, imageURL string, targetDrivePath string, o
 		"target_drive", targetDrivePath,
 	)
 
-	// Step 1: Open target block device with direct sync flags
-	targetDev, err := os.OpenFile(targetDrivePath, os.O_WRONLY|os.O_SYNC, 0660)
+	// Step 1: Ensure parent directory exists
+	if dir := filepath.Dir(targetDrivePath); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0755)
+	}
+
+	// Step 2: Open target block device or regular file with appropriate sync flags
+	openFlags := os.O_WRONLY | os.O_SYNC
+	fi, statErr := os.Stat(targetDrivePath)
+	if os.IsNotExist(statErr) {
+		openFlags |= os.O_CREATE | os.O_TRUNC
+	} else if statErr == nil && (fi.Mode()&os.ModeDevice == 0) {
+		openFlags |= os.O_CREATE | os.O_TRUNC
+	}
+
+	targetDev, err := os.OpenFile(targetDrivePath, openFlags, 0660)
 	if err != nil {
 		return fmt.Errorf("failed opening target block device %s: %w", targetDrivePath, err)
 	}

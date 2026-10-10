@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.8] - 2026-10-10 (Storage Extraction & Loop Container Stream Resilience Release)
+
+### Fixed
+- **OS Image Stream to Container Files (`O_CREATE | O_TRUNC`):**
+  - Updated `StreamImage` in `internal/agent/provision/streamer.go` to support regular file targets in addition to raw block devices.
+  - Added parent directory creation (`os.MkdirAll`) and appropriate file open flags (`O_CREATE | O_TRUNC`) when streaming to loop container images.
+  - Resolved `open /tmp/redwolf-cloud-image.raw: no such file or directory` failure during RAID 1 and LVM image extraction.
+- **Adaptive Temp Image Storage Strategy:**
+  - Added `selectTempImagePath` to evaluate available capacity between in-memory RAM (`/tmp`) and target volume storage (`targetRootMount`), preventing out-of-memory errors on RAM-constrained nodes.
+- **Immediate Resource Cleanup:**
+  - Ensured immediate detachment of loop devices (`losetup -d`) and immediate removal of temporary raw images directly after root filesystem synchronization to prevent resource leaks and mount locking.
+- **Loop Device Partition Synchronization:**
+  - Added `settlePartitions` and `waitForDevice` synchronization guards for loop partition devices before mounting.
+
+---
+
 ## [1.2.7] - 2026-10-10 (Software RAID mdadm Syntax Fix Release)
 
 ### Fixed

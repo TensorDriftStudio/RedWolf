@@ -25,7 +25,7 @@ if [ -d "/usr/share/redwolf/assets/discovery" ] && [ -f "/usr/share/redwolf/asse
 fi
 
 # Automatic Discovery Assets Synchronization: Download or update official prebuilt release artifacts
-RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.7}"
+RELEASE_TAG="${REDWOLF_RELEASE_VERSION:-v1.2.8}"
 CURRENT_DISCOVERY_VER=""
 [ -f "$REDWOLF_IMAGE_DIR/discovery/.version" ] && CURRENT_DISCOVERY_VER="$(cat "$REDWOLF_IMAGE_DIR/discovery/.version" 2>/dev/null || true)"
 

@@ -2,6 +2,9 @@ package provision
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +95,46 @@ func TestGenerateLVMFstab_Ext4(t *testing.T) {
 	}
 	if !strings.Contains(str, "/boot ext4 defaults") {
 		t.Errorf("expected boot entry with ext4 in fstab, got:\n%s", str)
+	}
+}
+
+func TestSelectTempImagePath(t *testing.T) {
+	tempDir := t.TempDir()
+	path := selectTempImagePath(tempDir)
+	if path == "" {
+		t.Fatalf("expected non-empty temp image path")
+	}
+	// Path should be either /tmp/... or under tempDir
+	if path != "/tmp/redwolf-cloud-image.raw" && !strings.HasPrefix(path, tempDir) {
+		t.Errorf("unexpected temp image path: %s", path)
+	}
+}
+
+func TestStreamImage_RegularFile(t *testing.T) {
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "subdir", "test-image.raw")
+
+	sampleData := []byte("RedWolf Provisioning Test Stream Content 1234567890")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(sampleData)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(sampleData)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	err := StreamImage(ctx, server.URL, targetPath, nil)
+	if err != nil {
+		t.Fatalf("unexpected error streaming to regular file: %v", err)
+	}
+
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed reading created image file: %v", err)
+	}
+
+	if string(content) != string(sampleData) {
+		t.Errorf("content mismatch: got %q, expected %q", string(content), string(sampleData))
 	}
 }
 
