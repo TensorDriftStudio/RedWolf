@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.7%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.3.8%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.3.7` — Immutable release version
+  * `wolverandover/redwolf:1.3.8` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,7 +423,12 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.7 — Dracut Dynamic Module Discovery & Initramfs Bulletproofing (Current)
+### ✅ Version 1.3.8 — LVM Binary Verification & Offline DNF Fast-Fail (Current)
+- [x] **LVM Binary Pre-Requisite Verification:** Verified presence of `/usr/sbin/lvm` or `/sbin/lvm` before adding `"lvm"` to Dracut `--add` modules, eliminating `dracut module 'lvm' cannot be found or installed` errors on minimal cloud images.
+- [x] **Fast-Fail Network Timeouts:** Enforced 5s timeout on `dnf`/`microdnf` with connection timeouts to prevent delays on air-gapped homelabs and isolated provisioning networks.
+- [x] **Target Image Rebuild Reliability:** Explicitly targeted destination `/boot/initramfs-*.img` across all fallback rebuilding tiers.
+
+### ✅ Version 1.3.7 — Dracut Dynamic Module Discovery & Initramfs Bulletproofing
 - [x] **Dracut Dynamic Module Discovery:** Automatically detects installed dracut modules and presence of `mdadm` binary before passing `--add` arguments, eliminating `dracut module 'mdraid' cannot be found or installed` errors.
 - [x] **Automated Package Manager Installation:** Injects `mdadm` into AlmaLinux / RHEL / Fedora chroots via `dnf`/`microdnf` when Software RAID is requested.
 - [x] **Multi-Tiered Initramfs Fallbacks:** Tiered fallback from explicit target image -> generic dracut -> storage drivers only -> seamless preservation of pre-existing valid cloud image initramfs.

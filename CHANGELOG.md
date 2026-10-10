@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.8] - 2026-10-10 (LVM Binary Verification & Offline DNF Fast-Fail Release)
+
+### Fixed
+- **LVM Binary Pre-Requisite Verification for Dracut (`executor.go`):**
+  - Resolved `dracut: dracut module 'lvm' cannot be found or installed` by verifying that the `lvm` userspace binary exists in `/usr/sbin/lvm` or `/sbin/lvm` before adding `"lvm"` to Dracut's `--add` module arguments.
+  - Omitted `--add lvm` when target cloud images lack LVM binaries, preventing Dracut fatal exits during standard partition and minimal cloud image deployments.
+  - Added target image destination `/boot/initramfs-*.img` explicitly to Tier 3 storage driver builds.
+- **Fail-Fast Package Manager Network Timeouts (`executor.go`):**
+  - Reduced `dnf`/`microdnf` context timeout from 30 seconds to 5 seconds and added `--setopt=timeout=5 --setopt=connect_timeout=5`, eliminating stalls on air-gapped homelabs or isolated data center provisioning networks.
+
 ## [1.3.7] - 2026-10-10 (Dracut Dynamic Module Discovery & Initramfs Bulletproofing Release)
 
 ### Fixed

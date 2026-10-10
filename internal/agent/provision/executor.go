@@ -812,45 +812,52 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 	// Dracut (AlmaLinux / RHEL / CentOS / Fedora)
 	dracutPath := filepath.Join(targetRootMount, "usr", "bin", "dracut")
 	if _, err := os.Stat(dracutPath); err == nil {
-		if raidRequired {
-			hasMdadm := false
+		hasMdadm := false
+		for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
+			if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+				hasMdadm = true
+				break
+			}
+		}
+
+		if raidRequired && !hasMdadm {
+			slog.InfoContext(ctx, "mdadm not found in chroot; attempting package manager installation for Software RAID support")
+			for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
+				if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
+					dnfCtx, dnfCancel := context.WithTimeout(ctx, 5*time.Second)
+					_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "--setopt=timeout=5", "--setopt=connect_timeout=5", "mdadm").Run()
+					dnfCancel()
+					break
+				}
+			}
+			// Re-verify mdadm binary
 			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
 				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
 					hasMdadm = true
 					break
 				}
 			}
-			if !hasMdadm {
-				slog.InfoContext(ctx, "mdadm not found in chroot; attempting package manager installation for Software RAID support")
-				for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
-					if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
-						dnfCtx, dnfCancel := context.WithTimeout(ctx, 30*time.Second)
-						_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "mdadm").Run()
-						dnfCancel()
-						break
-					}
-				}
+		}
+
+		hasLVM := false
+		for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
+			if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
+				hasLVM = true
+				break
 			}
 		}
 
-		// Dynamically discover supported dracut modules
+		// Dynamically discover supported dracut modules (only when matching userspace binaries exist)
 		var addModules []string
-		if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90lvm")); sErr == nil {
-			addModules = append(addModules, "lvm")
+		if hasLVM {
+			if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90lvm")); sErr == nil {
+				addModules = append(addModules, "lvm")
+			}
 		}
 
-		if raidRequired {
-			hasMdadm := false
-			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil {
-					hasMdadm = true
-					break
-				}
-			}
-			if hasMdadm {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90mdraid")); sErr == nil {
-					addModules = append(addModules, "mdraid")
-				}
+		if raidRequired && hasMdadm {
+			if _, sErr := os.Stat(filepath.Join(targetRootMount, "usr", "lib", "dracut", "modules.d", "90mdraid")); sErr == nil {
+				addModules = append(addModules, "mdraid")
 			}
 		}
 
@@ -891,11 +898,11 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 
 		// 3. Retry without --add (storage and raid drivers only)
 		slog.WarnContext(ctx, "dracut regeneration with modules returned warning; retrying with storage drivers only", "output", string(out), "error", err)
-		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion,
+		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", targetImg, kInfo.KernelVersion,
 			"--add-drivers", "nvme megaraid_sas mpt3sas smartpqi ahci sd_mod raid0 raid1 raid10 dm_mod")
 		out, err = cmd.CombinedOutput()
 		if err == nil {
-			slog.InfoContext(ctx, "successfully regenerated dracut initramfs with storage drivers inside chroot", "kernel_version", kInfo.KernelVersion)
+			slog.InfoContext(ctx, "successfully regenerated dracut initramfs with storage drivers inside chroot", "target_img", targetImg, "kernel_version", kInfo.KernelVersion)
 			return nil
 		}
 
