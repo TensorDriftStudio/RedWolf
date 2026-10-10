@@ -467,15 +467,33 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 	var parts []string
 
 	if layout.IsLVM {
-		parts = append(parts, "root=/dev/mapper/vg_system-root", "rd.lvm.lv=vg_system/root")
+		parts = append(parts,
+			"root=/dev/mapper/vg_system-root",
+			"rd.lvm=1",
+			"rd.lvm.vg=vg_system",
+			"rd.lvm.lv=vg_system/root",
+		)
 		if layout.IsSoftwareRAID {
-			parts = append(parts, "rd.md=1")
+			parts = append(parts, "rd.auto=1", "rd.md=1")
+			if layout.DataRAIDUUID != "" {
+				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
+			}
+			if layout.BootRAIDUUID != "" {
+				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
+			}
 		}
 	} else if layout.IsSoftwareRAID {
+		parts = append(parts, "rd.auto=1", "rd.md=1")
+		if layout.DataRAIDUUID != "" {
+			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
+		}
+		if layout.BootRAIDUUID != "" {
+			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
+		}
 		if newRootUUID != "" {
-			parts = append(parts, fmt.Sprintf("root=UUID=%s", newRootUUID), "rd.md=1")
+			parts = append(parts, fmt.Sprintf("root=UUID=%s", newRootUUID))
 		} else {
-			parts = append(parts, fmt.Sprintf("root=%s", layout.RootPartition), "rd.md=1")
+			parts = append(parts, fmt.Sprintf("root=%s", layout.RootPartition))
 		}
 	} else {
 		if newRootUUID != "" {
@@ -487,7 +505,8 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 		}
 	}
 
-	parts = append(parts, "ro", "console=tty0", "console=ttyS0,115200")
+	// Place console=tty0 LAST so the interactive screen (KVM/VMware/VGA) is the primary system console
+	parts = append(parts, "ro", "console=ttyS0,115200", "console=tty0")
 	return strings.Join(parts, " ")
 }
 

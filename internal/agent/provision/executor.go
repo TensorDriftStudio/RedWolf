@@ -284,7 +284,12 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		}
 	}
 
-	// 10. Inject Cloud-Init NoCloud seed & direct credentials + /etc/redwolf-release
+	// 10. Configure LVM device scanning and purge stale cloud-image devices files
+	if layout.IsLVM {
+		_ = ConfigureTargetLVM(targetRootMount)
+	}
+
+	// 11. Inject Cloud-Init NoCloud seed & direct credentials + /etc/redwolf-release
 	_ = reporter.Report(ctx, nodeID, 85, "Injecting Cloud-Init NoCloud seed...", "Writing user-data, meta-data, and network-config")
 	if err := WriteNoCloudSeeds(targetRootMount, task.Config, bootMAC); err != nil {
 		return fmt.Errorf("failed injecting cloud-init: %w", err)
@@ -293,19 +298,25 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		slog.WarnContext(ctx, "non-fatal warning injecting security credentials", "error", err)
 	}
 
-	// 11. Install Legacy BIOS MBR bootloader on all target drives (supports dual BIOS & UEFI booting)
+	// 12. Regenerate target initramfs with baked-in RAID and LVM modules
+	if layout.IsSoftwareRAID || layout.IsLVM {
+		_ = reporter.Report(ctx, nodeID, 87, "Regenerating initramfs...", "Building initramfs with storage and RAID drivers")
+		tryRebuildInitramfs(ctx, targetRootMount)
+	}
+
+	// 13. Install Legacy BIOS MBR bootloader on all target drives (supports dual BIOS & UEFI booting)
 	_ = reporter.Report(ctx, nodeID, 88, "Installing BIOS MBR bootloader...", "Writing MBR boot code and core image to target drives")
 	if err := InstallBIOSBootloader(ctx, layout.ESPDrives, bootMount, targetRootMount); err != nil {
 		slog.WarnContext(ctx, "non-fatal warning during BIOS bootloader installation", "error", err)
 	}
 
-	// 12. Generate Universal GRUB configuration (guarantees direct kernel boot on BIOS & UEFI)
+	// 14. Generate Universal GRUB configuration (guarantees direct kernel boot on BIOS & UEFI)
 	_ = reporter.Report(ctx, nodeID, 89, "Generating universal bootloader configuration...", "Writing direct kernel boot entries to GRUB and EFI")
 	if err := GenerateUniversalGrubConfig(ctx, targetRootMount, layout, task.OS); err != nil {
 		slog.WarnContext(ctx, "warning generating universal grub config", "error", err)
 	}
 
-	// 13. Unmount all target partitions cleanly
+	// 15. Unmount all target partitions cleanly
 	_ = reporter.Report(ctx, nodeID, 90, "Finalizing storage writes...", "Flushing disk buffers and unmounting target volumes")
 	unmountAllUnder(ctx, targetRootMount)
 
@@ -520,19 +531,7 @@ func generateLVMFstab(ctx context.Context, targetRootMount string, layout *Stora
 
 func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout *StorageLayoutResult, sourceRootUUID string) {
 	newRootUUID := getPartitionUUID(ctx, layout.RootPartition)
-	var rootArg string
-	if layout.IsLVM {
-		rootArg = "root=/dev/mapper/vg_system-root rd.lvm.lv=vg_system/root"
-		if layout.IsSoftwareRAID {
-			rootArg += " rd.md=1"
-		}
-	} else if layout.IsSoftwareRAID {
-		if newRootUUID != "" {
-			rootArg = fmt.Sprintf("root=UUID=%s rd.md=1", newRootUUID)
-		} else {
-			rootArg = fmt.Sprintf("root=%s rd.md=1", layout.RootPartition)
-		}
-	}
+	kernelArgs := ComputeKernelArgs(layout, newRootUUID)
 
 	// 1. Update BLS entries (/boot/loader/entries/*.conf)
 	entriesDir := filepath.Join(targetRootMount, "boot", "loader", "entries")
@@ -541,23 +540,11 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 			if strings.HasSuffix(e.Name(), ".conf") {
 				p := filepath.Join(entriesDir, e.Name())
 				if data, err := os.ReadFile(p); err == nil {
-					content := string(data)
-					if sourceRootUUID != "" && rootArg != "" {
-						content = strings.ReplaceAll(content, "root=UUID="+sourceRootUUID, rootArg)
-						if newRootUUID != "" {
-							content = strings.ReplaceAll(content, "UUID="+sourceRootUUID, "UUID="+newRootUUID)
-						}
-					}
-					lines := strings.Split(content, "\n")
+					lines := strings.Split(string(data), "\n")
 					for idx, line := range lines {
 						trimmed := strings.TrimSpace(line)
 						if strings.HasPrefix(trimmed, "options ") {
-							if layout.IsLVM && !strings.Contains(line, "rd.lvm.lv=vg_system/root") {
-								lines[idx] = line + " rd.lvm.lv=vg_system/root"
-							}
-							if layout.IsSoftwareRAID && !strings.Contains(line, "rd.md=1") {
-								lines[idx] = line + " rd.md=1"
-							}
+							lines[idx] = "options " + kernelArgs
 						}
 					}
 					_ = os.WriteFile(p, []byte(strings.Join(lines, "\n")), 0644)
@@ -796,4 +783,96 @@ func CleanShutdownStorage(ctx context.Context, targetRootMount string, layout *S
 	_ = exec.CommandContext(ctx, "sync").Run()
 	time.Sleep(1 * time.Second)
 	slog.InfoContext(ctx, "storage subsystem cleanly synchronized and ready for restart")
+}
+
+// ConfigureTargetLVM ensures LVM on the deployed operating system dynamically detects
+// Software RAID and NVMe block devices by purging stale devices files and setting use_devicesfile = 0.
+func ConfigureTargetLVM(targetRootMount string) error {
+	// 1. Remove stale system.devices inherited from cloud images
+	devicesDir := filepath.Join(targetRootMount, "etc", "lvm", "devices")
+	_ = os.Remove(filepath.Join(devicesDir, "system.devices"))
+
+	if entries, err := os.ReadDir(devicesDir); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".devices") {
+				_ = os.Remove(filepath.Join(devicesDir, e.Name()))
+			}
+		}
+	}
+
+	// 2. Disable use_devicesfile in lvmlocal.conf
+	lvmDir := filepath.Join(targetRootMount, "etc", "lvm")
+	_ = os.MkdirAll(lvmDir, 0755)
+
+	lvmLocalPath := filepath.Join(lvmDir, "lvmlocal.conf")
+	localContent := "# Auto-generated by RedWolf Provisioning Engine\n# Disable devices file to permit dynamic detection of Software RAID and NVMe volumes\ndevices {\n    use_devicesfile = 0\n}\n"
+	_ = os.WriteFile(lvmLocalPath, []byte(localContent), 0644)
+
+	// 3. Disable use_devicesfile in lvm.conf if present
+	lvmConfPath := filepath.Join(lvmDir, "lvm.conf")
+	if data, err := os.ReadFile(lvmConfPath); err == nil {
+		content := string(data)
+		if strings.Contains(content, "use_devicesfile = 1") {
+			content = strings.ReplaceAll(content, "use_devicesfile = 1", "use_devicesfile = 0")
+			_ = os.WriteFile(lvmConfPath, []byte(content), 0644)
+		}
+	}
+
+	return nil
+}
+
+// tryRebuildInitramfs attempts to regenerate the initramfs inside target chroot to ensure
+// mdraid, lvm, and filesystem drivers are natively baked into the boot image.
+func tryRebuildInitramfs(ctx context.Context, targetRootMount string) {
+	bootDir := filepath.Join(targetRootMount, "boot")
+	kInfo, err := FindInstalledKernel(bootDir)
+	if err != nil {
+		slog.DebugContext(ctx, "skipping initramfs rebuild; kernel not found", "error", err)
+		return
+	}
+
+	slog.InfoContext(ctx, "regenerating initramfs inside target chroot", "kernel_version", kInfo.KernelVersion)
+
+	binds := []string{"/dev", "/proc", "/sys"}
+	for _, b := range binds {
+		targetB := filepath.Join(targetRootMount, b)
+		_ = os.MkdirAll(targetB, 0755)
+		_ = exec.CommandContext(ctx, "mount", "--bind", b, targetB).Run()
+	}
+	defer func() {
+		for i := len(binds) - 1; i >= 0; i-- {
+			_ = exec.CommandContext(context.Background(), "umount", filepath.Join(targetRootMount, binds[i])).Run()
+		}
+	}()
+
+	// Method 1: Dracut (AlmaLinux / RHEL / CentOS / Fedora)
+	dracutPath := filepath.Join(targetRootMount, "usr", "bin", "dracut")
+	if _, err := os.Stat(dracutPath); err == nil {
+		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--no-hostonly", "--kver", kInfo.KernelVersion, "--add", "mdraid lvm")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
+			return
+		}
+		slog.DebugContext(ctx, "dracut with --no-hostonly warning; retrying standard dracut", "output", string(out), "error", err)
+		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion, "--add", "mdraid lvm")
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
+			return
+		}
+		slog.DebugContext(ctx, "dracut regeneration in chroot returned warning", "output", string(out), "error", err)
+	}
+
+	// Method 2: update-initramfs (Debian / Ubuntu)
+	updateInitramfsPath := filepath.Join(targetRootMount, "usr", "sbin", "update-initramfs")
+	if _, err := os.Stat(updateInitramfsPath); err == nil {
+		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", kInfo.KernelVersion)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			slog.InfoContext(ctx, "successfully updated debian initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
+			return
+		}
+		slog.DebugContext(ctx, "update-initramfs in chroot returned warning", "output", string(out), "error", err)
+	}
 }

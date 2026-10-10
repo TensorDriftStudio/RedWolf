@@ -31,6 +31,8 @@ type StorageLayoutResult struct {
 	LVMVolumes     []domain.LVMVolumeConfig
 	SwapDevice     string
 	TargetDisk     string
+	BootRAIDUUID   string
+	DataRAIDUUID   string
 }
 
 // SetupStorageArchitecture provisions disks according to standard, software RAID, or LVM configurations.
@@ -200,6 +202,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		"--level=1",
 		fmt.Sprintf("--raid-devices=%d", len(bootRaidMembers)),
 		"--metadata=1.0",
+		"--homehost=any",
 		"--force",
 		"--run",
 	}
@@ -221,6 +224,7 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		fmt.Sprintf("--level=%s", raidLevelStr),
 		fmt.Sprintf("--raid-devices=%d", len(dataRaidMembers)),
 		"--metadata=1.2",
+		"--homehost=any",
 		"--force",
 		"--run",
 	}
@@ -230,9 +234,14 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 	}
 	_ = waitForDevice(ctx, dataMD, 5*time.Second)
 
+	bootRaidUUID := getMDArrayUUID(ctx, bootMD)
+	dataRaidUUID := getMDArrayUUID(ctx, dataMD)
+
 	slog.InfoContext(ctx, "software raid arrays initialized successfully",
 		"boot_md", bootMD,
+		"boot_md_uuid", bootRaidUUID,
 		"data_md", dataMD,
+		"data_md_uuid", dataRaidUUID,
 		"level", raidLevelStr,
 		"is_lvm", isLVM,
 	)
@@ -251,6 +260,8 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		lvmRes.BootFSType = bootFsType
 		lvmRes.ESPPartition = espPartitions[0]
 		lvmRes.TargetDisk = memberDisks[0]
+		lvmRes.BootRAIDUUID = bootRaidUUID
+		lvmRes.DataRAIDUUID = dataRaidUUID
 		return lvmRes, nil
 	}
 
@@ -284,6 +295,8 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		BootFSType:     bootFsType,
 		ESPPartition:   espPartitions[0],
 		TargetDisk:     memberDisks[0],
+		BootRAIDUUID:   bootRaidUUID,
+		DataRAIDUUID:   dataRaidUUID,
 	}, nil
 }
 
@@ -654,4 +667,20 @@ func InjectMDADMConfig(ctx context.Context, mountPoint string) error {
 	}
 
 	return nil
+}
+
+// getMDArrayUUID queries the mdadm array details and extracts its MD_UUID value.
+func getMDArrayUUID(ctx context.Context, mdDev string) string {
+	cmd := exec.CommandContext(ctx, "mdadm", "--detail", "--export", mdDev)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "MD_UUID=") {
+			return strings.TrimPrefix(trimmed, "MD_UUID=")
+		}
+	}
+	return ""
 }

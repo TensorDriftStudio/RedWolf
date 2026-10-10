@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.2] - 2026-10-10 (Primary Console Ordering & Dynamic LVM Detection Release)
+
+### Fixed
+- **Primary System Console Ordering (`/dev/console`):**
+  - Reordered kernel boot parameters so `console=tty0` is placed last (`console=ttyS0,115200 console=tty0`). In Linux, systemd, dracut, and userspace redirect standard console output to the last specified console. This ensures live interactive logs and boot progress are shown on the physical/virtual VGA screen (VMware, KVM, iDRAC KVM) instead of freezing visually at kernel initialization while outputting to a disconnected serial port.
+- **Dynamic LVM Device Detection & Cloud Image Stale Devices Purge:**
+  - Implemented `ConfigureTargetLVM` to purge stale `/etc/lvm/devices/system.devices` files copied over from generic cloud images.
+  - Set `use_devicesfile = 0` in `/etc/lvm/lvmlocal.conf` and `/etc/lvm/lvm.conf` so LVM dynamically discovers Software RAID physical volumes (`/dev/md1`) and NVMe drives instead of failing PV discovery on boot.
+- **Universal MDADM Host Locking (`--homehost=any`):**
+  - Added `--homehost=any` to `mdadm --create` invocations for both boot (`/dev/md0`) and data/LVM (`/dev/md1`) arrays, preventing arrays from being tagged as foreign to the target operating system.
+- **Target Initramfs Rebuilding (`tryRebuildInitramfs`):**
+  - Implemented automated chroot initramfs regeneration via `dracut --force --no-hostonly --add "mdraid lvm"` (AlmaLinux/RHEL) and `update-initramfs` (Debian/Ubuntu), guaranteeing storage, LVM, and mdraid drivers are natively present in the target boot image.
+- **Explicit Storage Kernel Parameters:**
+  - Added `rd.auto=1`, `rd.lvm=1`, `rd.lvm.vg=vg_system`, `rd.lvm.lv=vg_system/root`, `rd.md=1`, and explicit array UUIDs (`rd.md.uuid=<DataRAIDUUID>`, `rd.md.uuid=<BootRAIDUUID>`) to BLS entries and universal GRUB configurations.
+
 ## [1.3.1] - 2026-10-10 (Universal GRUB Engine & Clean Storage Shutdown Release)
 
 ### Added
