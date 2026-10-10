@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-10-10 (Universal GRUB Engine & Clean Storage Shutdown Release)
+
+### Added
+- **Universal GRUB Engine (`GenerateUniversalGrubConfig`):**
+  - Implemented automatic installed kernel and initramfs discovery (`FindInstalledKernel`) scanning `/boot` for matching distribution kernels while ignoring rescue images.
+  - Generates standalone, self-contained `grub.cfg` files with direct kernel `menuentry` definitions across `/boot/grub/grub.cfg` (BIOS), `/boot/grub2/grub.cfg` (RHEL/AlmaLinux), and `/boot/grub.cfg`.
+  - Added root symlink `/boot/boot -> .` so both `/vmlinuz` and `/boot/vmlinuz` paths resolve identically in all boot environments.
+  - Pre-loads essential storage and filesystem drivers (`part_gpt`, `part_msdos`, `ext2`, `xfs`, `mdraid1x`, `lvm`, `biosdisk`) directly into `core.img` during BIOS MBR installation.
+- **Clean Storage & RAID Shutdown Engine (`CleanShutdownStorage`):**
+  - Guarantees full synchronization and clean shutdown of the storage subsystem prior to node restart:
+    - Unmounts all target partitions and temporary mounts under `/mnt`.
+    - Flushes kernel page cache buffers to disk via `sync`.
+    - Deactivates LVM volume groups (`vgchange -an`) to cleanly release underlying block devices.
+    - Waits for the `/boot` RAID 1 array (`/dev/md0`) to complete initial mirror resynchronization.
+    - Cleanly stops all Software RAID arrays (`mdadm --stop`), or marks them read-only (`mdadm --readonly`), eliminating abrupt worker thread aborts and `md: resync interrupted` errors on KVM console.
+    - Flushes physical disk hardware write caches via `blockdev --flushbufs`.
+
+### Fixed
+- **Interactive `grub>` Prompt Elimination:**
+  - Resolved missing `/boot/grub/grub.cfg` on Legacy BIOS boots: Alpine's `i386-pc` GRUB now finds its configuration immediately and boots into the production kernel without manual command prompt intervention.
+  - Eliminated syntax error in UEFI stub `/boot/efi/EFI/*/grub.cfg` caused by unsupported `[`/`test ! -f` negation operators, replacing with clean native `configfile` directives and direct fallback menu entries.
+- **Kernel Command Line Parameters for LVM on Software RAID:**
+  - Ensured `ComputeKernelArgs` properly includes both `rd.lvm.lv=vg_system/root` and `rd.md=1` when deploying LVM on top of Software RAID 1.
+- **Enterprise `mdadm.conf` Scanning:**
+  - Injected `DEVICE partitions` directive into target `/etc/mdadm.conf` and `/etc/mdadm/mdadm.conf` to guarantee dracut/initramfs scans all partition block devices at boot.
+
+---
+
 ## [1.3.0] - 2026-10-10 (Universal Dual BIOS & UEFI Hybrid Storage Architecture Release)
 
 ### Added

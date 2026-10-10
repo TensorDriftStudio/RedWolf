@@ -155,7 +155,7 @@ When using `--network host`, the following ports are serviced directly on the ho
 ## 🏷️ Image Tags
 
 * `wolverandover/redwolf:latest` — Tracks the latest stable release.
-* `wolverandover/redwolf:1.3.0` — Specific immutable release version.
+* `wolverandover/redwolf:1.3.1` — Specific immutable release version.
 
 ---
 

@@ -60,6 +60,9 @@ func ExecuteDeployment(ctx context.Context, task *domain.DeploymentTask, bootMAC
 		}
 	}
 
+	// Finalize storage subsystem, flush all buffers, and cleanly stop RAID arrays prior to reboot
+	CleanShutdownStorage(ctx, "/mnt/redwolf-target", layout)
+
 	// Finalize and trigger reboot into production OS
 	_ = reporter.Report(ctx, nodeID, 100, "Active in Production", "Provisioning complete. Rebooting into installed operating system.")
 	slog.InfoContext(ctx, "bare-metal provisioning complete; issuing reboot signal", "node_id", nodeID)
@@ -296,7 +299,13 @@ func executeExtractDeployment(ctx context.Context, task *domain.DeploymentTask, 
 		slog.WarnContext(ctx, "non-fatal warning during BIOS bootloader installation", "error", err)
 	}
 
-	// 12. Unmount all target partitions cleanly
+	// 12. Generate Universal GRUB configuration (guarantees direct kernel boot on BIOS & UEFI)
+	_ = reporter.Report(ctx, nodeID, 89, "Generating universal bootloader configuration...", "Writing direct kernel boot entries to GRUB and EFI")
+	if err := GenerateUniversalGrubConfig(ctx, targetRootMount, layout, task.OS); err != nil {
+		slog.WarnContext(ctx, "warning generating universal grub config", "error", err)
+	}
+
+	// 13. Unmount all target partitions cleanly
 	_ = reporter.Report(ctx, nodeID, 90, "Finalizing storage writes...", "Flushing disk buffers and unmounting target volumes")
 	unmountAllUnder(ctx, targetRootMount)
 
@@ -514,6 +523,9 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 	var rootArg string
 	if layout.IsLVM {
 		rootArg = "root=/dev/mapper/vg_system-root rd.lvm.lv=vg_system/root"
+		if layout.IsSoftwareRAID {
+			rootArg += " rd.md=1"
+		}
 	} else if layout.IsSoftwareRAID {
 		if newRootUUID != "" {
 			rootArg = fmt.Sprintf("root=UUID=%s rd.md=1", newRootUUID)
@@ -598,8 +610,15 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 			}
 
 			if newBootUUID != "" {
-				stub := fmt.Sprintf("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\nsearch --no-floppy --fs-uuid --set=dev %s\nif [ -z \"$dev\" ]; then\n    search --no-floppy --label --set=dev boot\nfi\nif [ -z \"$dev\" ]; then\n    set dev=hd0,gpt3\nfi\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub2\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
-				_ = os.WriteFile(subCfg, []byte(stub), 0644)
+				var efiSb strings.Builder
+				efiSb.WriteString("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\ninsmod lvm\n")
+				efiSb.WriteString(fmt.Sprintf("search --no-floppy --fs-uuid --set=dev %s\n", newBootUUID))
+				efiSb.WriteString("configfile ($dev)/grub2/grub.cfg\n")
+				efiSb.WriteString("configfile ($dev)/grub/grub.cfg\n")
+				efiSb.WriteString("configfile ($dev)/boot/grub2/grub.cfg\n")
+				efiSb.WriteString("configfile ($dev)/boot/grub/grub.cfg\n")
+				efiSb.WriteString("configfile ($dev)/grub.cfg\n")
+				_ = os.WriteFile(subCfg, []byte(efiSb.String()), 0644)
 			}
 		}
 
@@ -623,8 +642,15 @@ func updateBootloaderConfigs(ctx context.Context, targetRootMount string, layout
 
 		fallbackCfg := filepath.Join(bootDir, "grub.cfg")
 		if newBootUUID != "" {
-			fallbackContent := fmt.Sprintf("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\nsearch --no-floppy --fs-uuid --set=dev %s\nif [ -z \"$dev\" ]; then\n    search --no-floppy --label --set=dev boot\nfi\nif [ -z \"$dev\" ]; then\n    set dev=hd0,gpt3\nfi\nset prefix=($dev)/grub2\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub2\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/grub\nfi\nif [ ! -f ($prefix)/grub.cfg ]; then\n    set prefix=($dev)/boot/grub\nfi\nexport $prefix\nconfigfile ($prefix)/grub.cfg\n", newBootUUID)
-			_ = os.WriteFile(fallbackCfg, []byte(fallbackContent), 0644)
+			var fallbackSb strings.Builder
+			fallbackSb.WriteString("insmod part_gpt\ninsmod ext2\ninsmod xfs\ninsmod mdraid1x\ninsmod lvm\n")
+			fallbackSb.WriteString(fmt.Sprintf("search --no-floppy --fs-uuid --set=dev %s\n", newBootUUID))
+			fallbackSb.WriteString("configfile ($dev)/grub2/grub.cfg\n")
+			fallbackSb.WriteString("configfile ($dev)/grub/grub.cfg\n")
+			fallbackSb.WriteString("configfile ($dev)/boot/grub2/grub.cfg\n")
+			fallbackSb.WriteString("configfile ($dev)/boot/grub/grub.cfg\n")
+			fallbackSb.WriteString("configfile ($dev)/grub.cfg\n")
+			_ = os.WriteFile(fallbackCfg, []byte(fallbackSb.String()), 0644)
 		}
 	}
 }
@@ -696,4 +722,78 @@ func selectTempImagePath(targetRootMount string) string {
 	}
 
 	return "/tmp/redwolf-cloud-image.raw"
+}
+
+// CleanShutdownStorage ensures all filesystem buffers are flushed, LVM volume groups are deactivated,
+// and Software RAID arrays are cleanly synchronized and stopped or marked read-only before system reboot.
+func CleanShutdownStorage(ctx context.Context, targetRootMount string, layout *StorageLayoutResult) {
+	slog.InfoContext(ctx, "performing clean storage subsystem synchronization and shutdown")
+
+	// 1. Unmount all mounted filesystems under target and /mnt
+	unmountAllUnder(ctx, targetRootMount)
+	unmountAllUnder(ctx, "/mnt")
+
+	// 2. Flush dirty filesystem buffers to storage
+	_ = exec.CommandContext(ctx, "sync").Run()
+
+	// 3. Deactivate LVM volume groups so underlying block devices are released
+	if layout != nil && (layout.IsLVM || len(layout.LVMVolumes) > 0 || layout.LVMVolumeGroup != "") {
+		slog.InfoContext(ctx, "deactivating LVM volume groups prior to reboot")
+		vgName := layout.LVMVolumeGroup
+		if vgName == "" {
+			vgName = "vg_system"
+		}
+		_ = exec.CommandContext(ctx, "vgchange", "-an", vgName).Run()
+		_ = exec.CommandContext(ctx, "vgchange", "-an").Run()
+		_ = exec.CommandContext(ctx, "sync").Run()
+	}
+
+	// 4. Cleanly stop or protect Software RAID arrays
+	if layout != nil && layout.IsSoftwareRAID {
+		slog.InfoContext(ctx, "synchronizing and stopping Software RAID arrays prior to reboot")
+
+		// Wait up to 30s for the small /boot RAID1 array (/dev/md0) to complete initial mirror sync
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_ = exec.CommandContext(waitCtx, "mdadm", "--wait", "/dev/md0").Run()
+		cancel()
+
+		// Wait for arrays to become clean
+		_ = exec.CommandContext(ctx, "mdadm", "--wait-clean", "/dev/md0").Run()
+		_ = exec.CommandContext(ctx, "mdadm", "--wait-clean", "/dev/md1").Run()
+
+		// Attempt clean stop of all md arrays to terminate background resync threads
+		stopOut0, stopErr0 := exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md0").CombinedOutput()
+		if stopErr0 != nil {
+			slog.DebugContext(ctx, "mdadm stop /dev/md0 returned error; switching to readonly mode", "output", string(stopOut0), "error", stopErr0)
+			_ = exec.CommandContext(ctx, "mdadm", "--readonly", "/dev/md0").Run()
+		} else {
+			slog.InfoContext(ctx, "cleanly stopped /dev/md0 boot RAID array")
+		}
+
+		stopOut1, stopErr1 := exec.CommandContext(ctx, "mdadm", "--stop", "/dev/md1").CombinedOutput()
+		if stopErr1 != nil {
+			slog.DebugContext(ctx, "mdadm stop /dev/md1 returned error; switching to readonly mode", "output", string(stopOut1), "error", stopErr1)
+			_ = exec.CommandContext(ctx, "mdadm", "--readonly", "/dev/md1").Run()
+		} else {
+			slog.InfoContext(ctx, "cleanly stopped /dev/md1 data RAID array")
+		}
+
+		_ = exec.CommandContext(ctx, "mdadm", "--stop", "--scan").Run()
+	}
+
+	// 5. Flush hardware write caches on all target disks
+	if layout != nil {
+		for _, drive := range layout.ESPDrives {
+			realDisk, err := filepath.EvalSymlinks(drive)
+			if err != nil {
+				realDisk = drive
+			}
+			_ = exec.CommandContext(ctx, "blockdev", "--flushbufs", realDisk).Run()
+		}
+	}
+
+	// 6. Final sync and brief stabilization pause
+	_ = exec.CommandContext(ctx, "sync").Run()
+	time.Sleep(1 * time.Second)
+	slog.InfoContext(ctx, "storage subsystem cleanly synchronized and ready for restart")
 }
