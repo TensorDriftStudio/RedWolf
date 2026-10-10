@@ -173,8 +173,6 @@ func TestComputeKernelArgs(t *testing.T) {
 		IsLVM:          true,
 		IsSoftwareRAID: true,
 		RootPartition:  "/dev/mapper/vg_system-root",
-		DataRAIDUUID:   "abcd-1234",
-		BootRAIDUUID:   "ef01-5678",
 	}
 	args := ComputeKernelArgs(layoutRAIDLVM, "")
 	if !strings.Contains(args, "root=/dev/mapper/vg_system-root") {
@@ -183,31 +181,23 @@ func TestComputeKernelArgs(t *testing.T) {
 	if !strings.Contains(args, "rd.lvm=1") {
 		t.Errorf("expected rd.lvm=1 in args, got %s", args)
 	}
-	if !strings.Contains(args, "rd.lvm.vg=vg_system") {
-		t.Errorf("expected rd.lvm.vg=vg_system in args, got %s", args)
-	}
-	if !strings.Contains(args, "rd.lvm.lv=vg_system/root") {
-		t.Errorf("expected rd.lvm.lv=vg_system/root in args, got %s", args)
-	}
 	if !strings.Contains(args, "rd.auto=1") {
 		t.Errorf("expected rd.auto=1 in args, got %s", args)
 	}
 	if !strings.Contains(args, "rd.md=1") {
 		t.Errorf("expected rd.md=1 in args, got %s", args)
 	}
-	if !strings.Contains(args, "rd.md.uuid=abcd-1234") {
-		t.Errorf("expected rd.md.uuid=abcd-1234 in args, got %s", args)
+	if !strings.Contains(args, "console=tty0") {
+		t.Errorf("expected console=tty0 in args, got %s", args)
 	}
-	// Verify console=tty0 is at the end of the argument list
-	if !strings.HasSuffix(args, "console=tty0") {
-		t.Errorf("expected console=tty0 to be the last argument, got %s", args)
+	if strings.Contains(args, "console=ttyS0") {
+		t.Errorf("did not expect console=ttyS0 in args, got %s", args)
 	}
 
 	// 2. Software RAID 1 without LVM
 	layoutRAID := &StorageLayoutResult{
 		IsSoftwareRAID: true,
 		RootPartition:  "/dev/md1",
-		DataRAIDUUID:   "9999-8888",
 	}
 	argsRAID := ComputeKernelArgs(layoutRAID, "1234-abcd")
 	if !strings.Contains(argsRAID, "root=UUID=1234-abcd") {
@@ -218,9 +208,6 @@ func TestComputeKernelArgs(t *testing.T) {
 	}
 	if !strings.Contains(argsRAID, "rd.md=1") {
 		t.Errorf("expected rd.md=1 in args, got %s", argsRAID)
-	}
-	if !strings.Contains(argsRAID, "rd.md.uuid=9999-8888") {
-		t.Errorf("expected rd.md.uuid=9999-8888 in args, got %s", argsRAID)
 	}
 }
 

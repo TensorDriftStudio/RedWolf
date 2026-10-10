@@ -848,31 +848,40 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string) {
 	// Method 1: Dracut (AlmaLinux / RHEL / CentOS / Fedora)
 	dracutPath := filepath.Join(targetRootMount, "usr", "bin", "dracut")
 	if _, err := os.Stat(dracutPath); err == nil {
-		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--no-hostonly", "--kver", kInfo.KernelVersion, "--add", "mdraid lvm")
+		targetImg := filepath.Join("/boot", kInfo.InitrdFile)
+		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", targetImg, kInfo.KernelVersion, "--add", "mdraid lvm", "--add-drivers", "raid1 dm_mod")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
-			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
+			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "target_img", targetImg, "kernel_version", kInfo.KernelVersion)
 			return
 		}
-		slog.DebugContext(ctx, "dracut with --no-hostonly warning; retrying standard dracut", "output", string(out), "error", err)
-		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion, "--add", "mdraid lvm")
+		slog.WarnContext(ctx, "dracut regeneration with explicit image returned warning; retrying generic dracut", "output", string(out), "error", err)
+		cmd = exec.CommandContext(ctx, "chroot", targetRootMount, "dracut", "--force", "--kver", kInfo.KernelVersion, "--add", "mdraid lvm", "--add-drivers", "raid1 dm_mod")
 		out, err = cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully regenerated dracut initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
 			return
 		}
-		slog.DebugContext(ctx, "dracut regeneration in chroot returned warning", "output", string(out), "error", err)
+		slog.WarnContext(ctx, "dracut regeneration in chroot returned warning", "output", string(out), "error", err)
 	}
 
 	// Method 2: update-initramfs (Debian / Ubuntu)
 	updateInitramfsPath := filepath.Join(targetRootMount, "usr", "sbin", "update-initramfs")
 	if _, err := os.Stat(updateInitramfsPath); err == nil {
+		modulesFile := filepath.Join(targetRootMount, "etc", "initramfs-tools", "modules")
+		if modData, err := os.ReadFile(modulesFile); err == nil {
+			content := string(modData)
+			if !strings.Contains(content, "raid1") {
+				content += "\nraid1\ndm-mod\n"
+				_ = os.WriteFile(modulesFile, []byte(content), 0644)
+			}
+		}
 		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", kInfo.KernelVersion)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully updated debian initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
 			return
 		}
-		slog.DebugContext(ctx, "update-initramfs in chroot returned warning", "output", string(out), "error", err)
+		slog.WarnContext(ctx, "update-initramfs in chroot returned warning", "output", string(out), "error", err)
 	}
 }

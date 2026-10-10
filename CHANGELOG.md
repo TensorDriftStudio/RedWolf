@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.3] - 2026-10-10 (Universal VGA Console & Unrestricted Dracut Boot Release)
+
+### Fixed
+- **Elimination of `console=ttyS0` Boot Hangs on VMware:**
+  - Removed unconditional serial console (`console=ttyS0,115200`) from deployed target operating system kernel parameters. On VMware virtual machines and hypervisors without physical or virtual serial port devices attached, the Linux kernel and systemd blocked indefinitely polling missing UART registers (`0x3f8`). All deployments now use `console=tty0` cleanly.
+- **Unrestricted Dracut RAID & LVM Auto-Assembly:**
+  - Replaced restrictive `rd.md.uuid`, `rd.lvm.vg`, and `rd.lvm.lv` kernel parameters with universal `rd.auto=1 rd.lvm=1 rd.md=1`. This eliminates dracut rejecting MD RAID arrays or LVM volume groups due to array UUID format mismatches.
+- **Real-Time Systemd Status Output:**
+  - Added `systemd.show_status=1` to kernel arguments, providing live visual feedback of systemd services and dracut startup tasks directly on the VGA/KVM console.
+- **Target Initramfs Driver Ingestion:**
+  - Updated `tryRebuildInitramfs` to explicitly specify the destination `/boot/initramfs-*.img` path and inject `--add-drivers "raid1 dm_mod"` into dracut, and ensure `raid1` and `dm-mod` are present in Debian's `/etc/initramfs-tools/modules`.
+
 ## [1.3.2] - 2026-10-10 (Primary Console Ordering & Dynamic LVM Detection Release)
 
 ### Fixed

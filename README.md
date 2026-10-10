@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.2%20Enterprise-crimson.svg?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/Release-v1.3.3%20Enterprise-crimson.svg?style=flat-square" alt="Release">
   <a href="https://hub.docker.com/r/wolverandover/redwolf"><img src="https://img.shields.io/badge/Docker%20Hub-wolverandover%2Fredwolf-2496ED.svg?logo=docker&logoColor=white&style=flat-square" alt="Docker Hub"></a>
   <img src="https://img.shields.io/badge/License-Apache%202.0%20%2F%20GPLv3-blue.svg?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Dell%20%7C%20Supermicro%20%7C%20ASRock%20Rack-darkred.svg?style=flat-square" alt="Platforms">
@@ -314,7 +314,7 @@ Official pre-built production appliance images are published to Docker Hub:
 * **Repository:** [`wolverandover/redwolf`](https://hub.docker.com/r/wolverandover/redwolf)
 * **Tags:**
   * `wolverandover/redwolf:latest` — Tracks the latest stable release
-  * `wolverandover/redwolf:1.3.2` — Immutable release version
+  * `wolverandover/redwolf:1.3.3` — Immutable release version
 
 The production appliance container packages all dependencies into a lightweight, secure Alpine image:
 
@@ -423,8 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.2 — Primary Console Ordering & Dynamic LVM Detection (Current)
-- [x] **Primary System Console Ordering (`/dev/console`):** Placed `console=tty0` after serial ports (`console=ttyS0,115200 console=tty0`) so interactive display (VGA/KVM/VMware) remains the active systemd/dracut console instead of hanging visually at kernel initialization.
+### ✅ Version 1.3.3 — Universal VGA Console & Unrestricted Dracut Boot (Current)
+- [x] **Elimination of `console=ttyS0` Hangs:** Removed unconditional serial console parameters on deployed systems. VMware virtual machines and hypervisors lacking physical serial hardware now boot cleanly to `console=tty0` without kernel/systemd UART timeouts.
+- [x] **Unrestricted Storage Auto-Assembly:** Replaced restrictive UUID and LV filters with universal `rd.auto=1 rd.lvm=1 rd.md=1`, allowing dracut to cleanly discover and assemble all local Software RAID and LVM partitions.
+- [x] **Live Systemd Status Reporting:** Injected `systemd.show_status=1` into kernel cmdline for real-time visibility into systemd service execution and dracut startup jobs.
+- [x] **Pre-loaded RAID & DM Kernel Drivers in Initramfs:** Explicitly instructed dracut to bake `raid1` and `dm_mod` directly into `/boot/initramfs-*.img`.
+
+### ✅ Version 1.3.2 — Primary Console Ordering & Dynamic LVM Detection
 - [x] **Dynamic LVM Device Detection:** Purged stale cloud image `/etc/lvm/devices/system.devices` and configured `use_devicesfile = 0` in `lvmlocal.conf` and `lvm.conf` so dracut dynamically scans Software RAID and NVMe physical volumes.
 - [x] **Universal MDADM `--homehost=any`:** Created Software RAID arrays with `--homehost=any` to avoid foreign host locking on target systems.
 - [x] **Target Initramfs Regeneration:** Native chroot regeneration using dracut (`--force --no-hostonly --add "mdraid lvm"`) and `update-initramfs` to guarantee storage and RAID modules are pre-baked into the target OS boot image.

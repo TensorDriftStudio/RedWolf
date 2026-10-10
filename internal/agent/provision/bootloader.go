@@ -469,27 +469,14 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 	if layout.IsLVM {
 		parts = append(parts,
 			"root=/dev/mapper/vg_system-root",
+			"rd.auto=1",
 			"rd.lvm=1",
-			"rd.lvm.vg=vg_system",
-			"rd.lvm.lv=vg_system/root",
 		)
 		if layout.IsSoftwareRAID {
-			parts = append(parts, "rd.auto=1", "rd.md=1")
-			if layout.DataRAIDUUID != "" {
-				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
-			}
-			if layout.BootRAIDUUID != "" {
-				parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
-			}
+			parts = append(parts, "rd.md=1")
 		}
 	} else if layout.IsSoftwareRAID {
 		parts = append(parts, "rd.auto=1", "rd.md=1")
-		if layout.DataRAIDUUID != "" {
-			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.DataRAIDUUID))
-		}
-		if layout.BootRAIDUUID != "" {
-			parts = append(parts, fmt.Sprintf("rd.md.uuid=%s", layout.BootRAIDUUID))
-		}
 		if newRootUUID != "" {
 			parts = append(parts, fmt.Sprintf("root=UUID=%s", newRootUUID))
 		} else {
@@ -505,8 +492,8 @@ func ComputeKernelArgs(layout *StorageLayoutResult, newRootUUID string) string {
 		}
 	}
 
-	// Place console=tty0 LAST so the interactive screen (KVM/VMware/VGA) is the primary system console
-	parts = append(parts, "ro", "console=ttyS0,115200", "console=tty0")
+	// Use console=tty0 to avoid hangs on virtual machines (e.g. VMware) lacking physical serial ports
+	parts = append(parts, "ro", "console=tty0", "systemd.show_status=1")
 	return strings.Join(parts, " ")
 }
 
