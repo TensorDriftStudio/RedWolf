@@ -755,7 +755,7 @@ func ConfigureTargetLVM(targetRootMount string) error {
 	_ = os.MkdirAll(lvmDir, 0755)
 
 	lvmLocalPath := filepath.Join(lvmDir, "lvmlocal.conf")
-	localContent := "devices {\n    use_devicesfile = 0\n}\n"
+	localContent := "devices {\n    use_devicesfile = 0\n    obtain_device_list_from_udev = 0\n}\n"
 	_ = os.WriteFile(lvmLocalPath, []byte(localContent), 0644)
 
 	// Disable use_devicesfile in lvm.conf if present
@@ -807,7 +807,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		_ = os.WriteFile(resolvTarget, data, 0644)
 	}
 
-	binds := []string{"/dev", "/proc", "/sys", "/run"}
+	binds := []string{"/dev", "/dev/pts", "/proc", "/sys", "/run"}
 	for _, b := range binds {
 		targetB := filepath.Join(targetRootMount, b)
 		_ = os.MkdirAll(targetB, 0755)
@@ -830,47 +830,11 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			}
 		}
 
-		if raidRequired && !hasMdadm {
-			slog.InfoContext(ctx, "mdadm not found in chroot; attempting package manager installation for Software RAID support")
-			for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
-					dnfCtx, dnfCancel := context.WithTimeout(ctx, 5*time.Second)
-					_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "--setopt=timeout=5", "--setopt=connect_timeout=5", "mdadm").Run()
-					dnfCancel()
-					break
-				}
-			}
-			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
-					hasMdadm = true
-					break
-				}
-			}
-		}
-
 		hasLVM := false
 		for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
 			if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
 				hasLVM = true
 				break
-			}
-		}
-
-		if lvmRequired && !hasLVM {
-			slog.InfoContext(ctx, "lvm not found in chroot; attempting package manager installation for LVM support")
-			for _, pkgMgr := range []string{"/usr/bin/dnf", "/usr/bin/microdnf"} {
-				if _, sErr := os.Stat(filepath.Join(targetRootMount, pkgMgr)); sErr == nil {
-					dnfCtx, dnfCancel := context.WithTimeout(ctx, 5*time.Second)
-					_ = exec.CommandContext(dnfCtx, "chroot", targetRootMount, filepath.Base(pkgMgr), "install", "-y", "--setopt=install_weak_deps=False", "--setopt=timeout=5", "--setopt=connect_timeout=5", "lvm2").Run()
-					dnfCancel()
-					break
-				}
-			}
-			for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
-				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
-					hasLVM = true
-					break
-				}
 			}
 		}
 
@@ -896,7 +860,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 
 		// 1. Attempt with explicit targetImg
 		var args []string
-		args = append(args, "--force", targetImg, kInfo.KernelVersion)
+		args = append(args, "--force", "--no-hostonly", targetImg, kInfo.KernelVersion)
 		if len(addModules) > 0 {
 			args = append(args, "--add", strings.Join(addModules, " "))
 		}
@@ -913,7 +877,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		// 2. Retry with generic --kver
 		slog.WarnContext(ctx, "dracut regeneration with explicit image returned warning; retrying generic dracut", "output", string(out), "error", err)
 		var kverArgs []string
-		kverArgs = append(kverArgs, "--force", "--kver", kInfo.KernelVersion)
+		kverArgs = append(kverArgs, "--force", "--no-hostonly", "--kver", kInfo.KernelVersion)
 		if len(addModules) > 0 {
 			kverArgs = append(kverArgs, "--add", strings.Join(addModules, " "))
 		}
@@ -943,48 +907,6 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 	// Update-initramfs (Debian / Ubuntu)
 	updateInitramfsPath := filepath.Join(targetRootMount, "usr", "sbin", "update-initramfs")
 	if _, err := os.Stat(updateInitramfsPath); err == nil {
-		if raidRequired {
-			hasMdadm := false
-			for _, p := range []string{"/usr/sbin/mdadm", "/sbin/mdadm"} {
-				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
-					hasMdadm = true
-					break
-				}
-			}
-			if !hasMdadm {
-				slog.InfoContext(ctx, "mdadm not found in chroot; attempting apt-get installation for Software RAID support")
-				aptCtx, aptCancel := context.WithTimeout(ctx, 5*time.Second)
-				aptCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "update", "-qq")
-				aptCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-				_ = aptCmd.Run()
-				aptInstallCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "install", "-y", "-qq", "--no-install-recommends", "mdadm")
-				aptInstallCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-				_ = aptInstallCmd.Run()
-				aptCancel()
-			}
-		}
-
-		if lvmRequired {
-			hasLVM := false
-			for _, p := range []string{"/usr/sbin/lvm", "/sbin/lvm"} {
-				if fi, sErr := os.Stat(filepath.Join(targetRootMount, p)); sErr == nil && !fi.IsDir() {
-					hasLVM = true
-					break
-				}
-			}
-			if !hasLVM {
-				slog.InfoContext(ctx, "lvm not found in chroot; attempting apt-get installation for LVM support")
-				aptCtx, aptCancel := context.WithTimeout(ctx, 5*time.Second)
-				aptCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "update", "-qq")
-				aptCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-				_ = aptCmd.Run()
-				aptInstallCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "install", "-y", "-qq", "--no-install-recommends", "lvm2")
-				aptInstallCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-				_ = aptInstallCmd.Run()
-				aptCancel()
-			}
-		}
-
 		modulesFile := filepath.Join(targetRootMount, "etc", "initramfs-tools", "modules")
 		if modData, err := os.ReadFile(modulesFile); err == nil {
 			content := string(modData)
@@ -996,30 +918,37 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			content += "\n"
 			_ = os.WriteFile(modulesFile, []byte(content), 0644)
 		}
+
+		// Set RESUME=none so initramfs does not stall waiting for obsolete swap UUIDs
+		resumeConf := filepath.Join(targetRootMount, "etc", "initramfs-tools", "conf.d", "resume")
+		_ = os.MkdirAll(filepath.Dir(resumeConf), 0755)
+		_ = os.WriteFile(resumeConf, []byte("RESUME=none\n"), 0644)
+
 		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", kInfo.KernelVersion)
-		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "RESUME=none")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
 			return nil
 		}
-		slog.WarnContext(ctx, "update-initramfs with specific kernel returned warning; retrying -k all", "output", string(out), "error", err)
-		allCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", "all")
-		allCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-		allOut, allErr := allCmd.CombinedOutput()
-		if allErr == nil {
-			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs for all kernels", "output", string(allOut))
-			return nil
-		}
 
 		// Also try -c (create) if -u (update) failed because no initramfs was registered yet
 		createCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-c", "-k", kInfo.KernelVersion)
-		createCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		createCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "RESUME=none")
 		if cOut, cErr := createCmd.CombinedOutput(); cErr == nil {
 			slog.InfoContext(ctx, "successfully created debian/ubuntu initramfs inside chroot with -c", "kernel_version", kInfo.KernelVersion)
 			return nil
 		} else {
 			slog.WarnContext(ctx, "update-initramfs -c returned warning", "output", string(cOut), "error", cErr)
+		}
+
+		slog.WarnContext(ctx, "update-initramfs with specific kernel returned warning; retrying -k all", "output", string(out), "error", err)
+		allCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", "all")
+		allCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "RESUME=none")
+		allOut, allErr := allCmd.CombinedOutput()
+		if allErr == nil {
+			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs for all kernels", "output", string(allOut))
+			return nil
 		}
 
 		if hasExistingInitrd {

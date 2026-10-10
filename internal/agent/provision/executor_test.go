@@ -172,4 +172,45 @@ func TestTryRebuildInitramfs_FallbackToExisting(t *testing.T) {
 	}
 }
 
+func TestConfigureTargetLVM(t *testing.T) {
+	tempDir := t.TempDir()
+	devicesDir := filepath.Join(tempDir, "etc", "lvm", "devices")
+	_ = os.MkdirAll(devicesDir, 0755)
+	_ = os.WriteFile(filepath.Join(devicesDir, "system.devices"), []byte("stale devices info"), 0644)
+	_ = os.WriteFile(filepath.Join(devicesDir, "custom.devices"), []byte("stale custom devices"), 0644)
+
+	lvmDir := filepath.Join(tempDir, "etc", "lvm")
+	_ = os.WriteFile(filepath.Join(lvmDir, "lvm.conf"), []byte("devices {\n    use_devicesfile = 1\n}\n"), 0644)
+
+	if err := ConfigureTargetLVM(tempDir); err != nil {
+		t.Fatalf("unexpected error configuring target LVM: %v", err)
+	}
+
+	// Verify system.devices and custom.devices are removed
+	if _, err := os.Stat(filepath.Join(devicesDir, "system.devices")); !os.IsNotExist(err) {
+		t.Errorf("expected system.devices to be deleted")
+	}
+	if _, err := os.Stat(filepath.Join(devicesDir, "custom.devices")); !os.IsNotExist(err) {
+		t.Errorf("expected custom.devices to be deleted")
+	}
+
+	// Verify lvmlocal.conf
+	localData, err := os.ReadFile(filepath.Join(lvmDir, "lvmlocal.conf"))
+	if err != nil {
+		t.Fatalf("failed reading lvmlocal.conf: %v", err)
+	}
+	if !strings.Contains(string(localData), "use_devicesfile = 0") || !strings.Contains(string(localData), "obtain_device_list_from_udev = 0") {
+		t.Errorf("lvmlocal.conf missing expected settings, got:\n%s", string(localData))
+	}
+
+	// Verify lvm.conf modification
+	confData, err := os.ReadFile(filepath.Join(lvmDir, "lvm.conf"))
+	if err != nil {
+		t.Fatalf("failed reading lvm.conf: %v", err)
+	}
+	if strings.Contains(string(confData), "use_devicesfile = 1") {
+		t.Errorf("lvm.conf still contains use_devicesfile = 1, got:\n%s", string(confData))
+	}
+}
+
 

@@ -34,6 +34,9 @@ func EnsureOfflineStorageTools(ctx context.Context, targetRootMount string, isSo
 	}
 
 	if isLVM || isSoftwareRAID {
+		if err := InjectStorageUdevRules(ctx, targetRootMount, isSoftwareRAID, isLVM); err != nil {
+			slog.WarnContext(ctx, "warning configuring storage udev rules", "error", err)
+		}
 		if err := InjectDracutStorageModule(ctx, targetRootMount, isSoftwareRAID, isLVM); err != nil {
 			slog.WarnContext(ctx, "warning configuring dracut storage modules", "error", err)
 		}
@@ -382,6 +385,35 @@ command -v lvm >/dev/null 2>&1 && lvm vgchange -ay || true
 	return nil
 }
 
+// InjectStorageUdevRules writes persistent udev rules ensuring automated device mapper and RAID discovery.
+func InjectStorageUdevRules(ctx context.Context, targetRootMount string, isSoftwareRAID, isLVM bool) error {
+	udevRulesDir := filepath.Join(targetRootMount, "etc", "udev", "rules.d")
+	_ = os.MkdirAll(udevRulesDir, 0755)
+
+	if isSoftwareRAID {
+		raidRule := `# RedWolf Bare-Metal Engine - MD RAID Auto-Assembly
+SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_TYPE}=="linux_raid_member", RUN+="/usr/sbin/mdadm --incremental $env{DEVNAME}"
+`
+		raidRulePath := filepath.Join(udevRulesDir, "64-md-raid-assembly.rules")
+		if err := os.WriteFile(raidRulePath, []byte(raidRule), 0644); err != nil {
+			slog.WarnContext(ctx, "failed writing mdadm udev rule", "path", raidRulePath, "error", err)
+		}
+	}
+
+	if isLVM {
+		lvmRule := `# RedWolf Bare-Metal Engine - LVM Auto-Activation
+SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_TYPE}=="LVM2_member", RUN+="/usr/sbin/lvm pvscan --cache $env{DEVNAME}"
+`
+		lvmRulePath := filepath.Join(udevRulesDir, "69-dm-lvm.rules")
+		if err := os.WriteFile(lvmRulePath, []byte(lvmRule), 0644); err != nil {
+			slog.WarnContext(ctx, "failed writing lvm udev rule", "path", lvmRulePath, "error", err)
+		}
+	}
+
+	slog.InfoContext(ctx, "storage udev rules successfully configured", "dir", udevRulesDir)
+	return nil
+}
+
 // InjectInitramfsToolsStorageHooks configures hooks and pre-mount scripts for Debian / Ubuntu initramfs-tools.
 func InjectInitramfsToolsStorageHooks(ctx context.Context, targetRootMount string, isSoftwareRAID, isLVM bool) error {
 	initramfsDir := filepath.Join(targetRootMount, "etc", "initramfs-tools")
@@ -390,7 +422,12 @@ func InjectInitramfsToolsStorageHooks(ctx context.Context, targetRootMount strin
 		return nil
 	}
 
-	// 1. Storage Drivers in /etc/initramfs-tools/modules
+	// 1. Disable swap resume wait by forcing RESUME=none in conf.d/resume
+	confDDir := filepath.Join(initramfsDir, "conf.d")
+	_ = os.MkdirAll(confDDir, 0755)
+	_ = os.WriteFile(filepath.Join(confDDir, "resume"), []byte("RESUME=none\n"), 0644)
+
+	// 2. Storage Drivers in /etc/initramfs-tools/modules
 	modulesFile := filepath.Join(initramfsDir, "modules")
 	var existingContent string
 	if data, err := os.ReadFile(modulesFile); err == nil {
@@ -399,7 +436,7 @@ func InjectInitramfsToolsStorageHooks(ctx context.Context, targetRootMount strin
 
 	requiredDrivers := []string{
 		"nvme", "megaraid_sas", "mpt3sas", "smartpqi", "ahci", "sd_mod",
-		"raid0", "raid1", "raid10", "dm-mod", "dm_mod",
+		"raid0", "raid1", "raid10", "linear", "dm-mod", "dm_mod", "xfs", "ext4",
 	}
 
 	var sb strings.Builder
@@ -415,7 +452,7 @@ func InjectInitramfsToolsStorageHooks(ctx context.Context, targetRootMount strin
 	}
 	_ = os.WriteFile(modulesFile, []byte(sb.String()), 0644)
 
-	// 2. Hook in /etc/initramfs-tools/hooks/redwolf-storage
+	// 3. Hook in /etc/initramfs-tools/hooks/redwolf-storage
 	hooksDir := filepath.Join(initramfsDir, "hooks")
 	_ = os.MkdirAll(hooksDir, 0755)
 
@@ -425,16 +462,30 @@ prereqs() { echo "$PREREQ"; }
 case $1 in prereqs) prereqs; exit 0;; esac
 . /usr/share/initramfs-tools/hook-functions
 
+# Copy binaries using copy_file binary to guarantee inclusion without ldd failure on static or musl binaries
 for b in /usr/sbin/mdadm /sbin/mdadm /usr/sbin/lvm /sbin/lvm; do
     if [ -x "$b" ]; then
-        copy_exec "$b" "/sbin/$(basename "$b")"
+        copy_file binary "$b" "/sbin/$(basename "$b")" 2>/dev/null || true
+        copy_exec "$b" "/sbin/$(basename "$b")" 2>/dev/null || true
     fi
 done
 
-if [ -f /lib/ld-musl-x86_64.so.1 ]; then
-    copy_exec /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
-fi
+# Copy musl dynamic linker and libraries if present
+for interp in /lib/ld-musl-x86_64.so.1 /lib64/ld-musl-x86_64.so.1 /usr/lib/ld-musl-x86_64.so.1; do
+    if [ -f "$interp" ]; then
+        copy_file binary "$interp" "$interp" 2>/dev/null || true
+        if [ "$interp" = "/lib/ld-musl-x86_64.so.1" ]; then
+            mkdir -p "${DESTDIR}/lib64"
+            cp -p "$interp" "${DESTDIR}/lib64/ld-musl-x86_64.so.1" 2>/dev/null || true
+        fi
+    fi
+done
 
+for lib in /lib/libc.musl* /usr/lib/libc.musl*; do
+    [ -f "$lib" ] && copy_file binary "$lib" "$lib" 2>/dev/null || true
+done
+
+# Ensure standard LVM symlinks are present in initramfs
 if [ -x "${DESTDIR}/sbin/lvm" ]; then
     for cmd in vgscan vgchange vgs vgdisplay lvscan lvchange lvs pvscan pvchange pvs; do
         [ ! -e "${DESTDIR}/sbin/${cmd}" ] && ln -s lvm "${DESTDIR}/sbin/${cmd}"
@@ -449,7 +500,7 @@ fi
 	hookPath := filepath.Join(hooksDir, "redwolf-storage")
 	_ = os.WriteFile(hookPath, []byte(hookScript), 0755)
 
-	// 3. Local-top script in /etc/initramfs-tools/scripts/local-top/redwolf-storage
+	// 4. Local-top script in /etc/initramfs-tools/scripts/local-top/redwolf-storage
 	localTopDir := filepath.Join(initramfsDir, "scripts", "local-top")
 	_ = os.MkdirAll(localTopDir, 0755)
 
@@ -458,17 +509,28 @@ PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case $1 in prereqs) prereqs; exit 0;; esac
 
+# Proactively load storage and raid kernel modules
+for mod in dm_mod dm-mod raid0 raid1 raid10 linear xfs ext4; do
+    modprobe "$mod" 2>/dev/null || true
+done
+
+command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=5 2>/dev/null || true
+
 if [ -x /sbin/mdadm ]; then
     /sbin/mdadm --assemble --scan --auto=yes || true
 elif [ -x /usr/sbin/mdadm ]; then
     /usr/sbin/mdadm --assemble --scan --auto=yes || true
 fi
 
+command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=5 2>/dev/null || true
+
 if [ -x /sbin/lvm ]; then
     /sbin/lvm vgchange -ay || true
 elif [ -x /usr/sbin/lvm ]; then
     /usr/sbin/lvm vgchange -ay || true
 fi
+
+command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=5 2>/dev/null || true
 `
 	localTopPath := filepath.Join(localTopDir, "redwolf-storage")
 	_ = os.WriteFile(localTopPath, []byte(localTopScript), 0755)
@@ -489,9 +551,9 @@ func InjectSystemdStorageServices(ctx context.Context, targetRootMount string, i
 	unitContent := `[Unit]
 Description=RedWolf Bare-Metal Storage Auto-Assembly (MDADM and LVM)
 DefaultDependencies=no
-After=systemd-udev-settle.service
-Before=local-fs-pre.target
-Wants=systemd-udev-settle.service
+After=systemd-udevd.service
+Before=local-fs-pre.target sysinit.target
+Wants=systemd-udevd.service
 ConditionPathExists=/etc/redwolf-release
 
 [Service]
@@ -502,18 +564,24 @@ ExecStart=-/usr/sbin/lvm vgchange -ay
 TimeoutSec=30
 
 [Install]
-WantedBy=local-fs-pre.target
+WantedBy=sysinit.target local-fs-pre.target
 `
 	unitFile := filepath.Join(systemdDir, "redwolf-storage-init.service")
 	if err := os.WriteFile(unitFile, []byte(unitContent), 0644); err != nil {
 		return fmt.Errorf("failed writing systemd unit %s: %w", unitFile, err)
 	}
 
-	wantsDir := filepath.Join(systemdDir, "local-fs-pre.target.wants")
-	_ = os.MkdirAll(wantsDir, 0755)
-	wantsSymlink := filepath.Join(wantsDir, "redwolf-storage-init.service")
-	_ = os.Remove(wantsSymlink)
-	_ = os.Symlink("../redwolf-storage-init.service", wantsSymlink)
+	// Symlink to both local-fs-pre.target.wants and sysinit.target.wants
+	wantsTargets := []string{
+		filepath.Join(systemdDir, "local-fs-pre.target.wants"),
+		filepath.Join(systemdDir, "sysinit.target.wants"),
+	}
+	for _, wDir := range wantsTargets {
+		_ = os.MkdirAll(wDir, 0755)
+		wLink := filepath.Join(wDir, "redwolf-storage-init.service")
+		_ = os.Remove(wLink)
+		_ = os.Symlink("../redwolf-storage-init.service", wLink)
+	}
 
 	slog.InfoContext(ctx, "systemd early storage auto-assembly unit enabled", "unit", unitFile)
 	return nil

@@ -62,14 +62,26 @@ func TestEnsureOfflineStorageTools_DracutAndSystemd(t *testing.T) {
 		t.Errorf("systemd unit missing assembly commands, got:\n%s", unitStr)
 	}
 
-	// Verify Symlink in local-fs-pre.target.wants
-	symlinkPath := filepath.Join(tempDir, "etc", "systemd", "system", "local-fs-pre.target.wants", "redwolf-storage-init.service")
-	target, err := os.Readlink(symlinkPath)
-	if err != nil {
-		t.Fatalf("expected symlink at %s, error: %v", symlinkPath, err)
+	// Verify Symlink in local-fs-pre.target.wants and sysinit.target.wants
+	for _, wDir := range []string{"local-fs-pre.target.wants", "sysinit.target.wants"} {
+		symlinkPath := filepath.Join(tempDir, "etc", "systemd", "system", wDir, "redwolf-storage-init.service")
+		target, err := os.Readlink(symlinkPath)
+		if err != nil {
+			t.Fatalf("expected symlink at %s, error: %v", symlinkPath, err)
+		}
+		if target != "../redwolf-storage-init.service" {
+			t.Errorf("expected symlink target ../redwolf-storage-init.service in %s, got: %s", wDir, target)
+		}
 	}
-	if target != "../redwolf-storage-init.service" {
-		t.Errorf("expected symlink target ../redwolf-storage-init.service, got: %s", target)
+
+	// 4. Verify UDEV Rules
+	raidRule := filepath.Join(tempDir, "etc", "udev", "rules.d", "64-md-raid-assembly.rules")
+	if rData, err := os.ReadFile(raidRule); err != nil || !strings.Contains(string(rData), "linux_raid_member") {
+		t.Errorf("expected raid udev rule at %s, err: %v", raidRule, err)
+	}
+	lvmRule := filepath.Join(tempDir, "etc", "udev", "rules.d", "69-dm-lvm.rules")
+	if lData, err := os.ReadFile(lvmRule); err != nil || !strings.Contains(string(lData), "LVM2_member") {
+		t.Errorf("expected lvm udev rule at %s, err: %v", lvmRule, err)
 	}
 }
 

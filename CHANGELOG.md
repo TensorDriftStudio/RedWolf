@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.11] - 2026-10-10 (Autonomous Offline LVM & MDRAID Storage Engine)
+
+### Added
+- **Autonomous Event-Driven Storage UDEV Rules (`offline_storage.go`):**
+  - Injected `/etc/udev/rules.d/64-md-raid-assembly.rules` for automated incremental MD RAID assembly on block device discovery.
+  - Injected `/etc/udev/rules.d/69-dm-lvm.rules` for automated LVM cache pvscan activation on physical volume detection.
+  - Bound early systemd auto-assembly unit (`redwolf-storage-init.service`) to both `sysinit.target.wants` and `local-fs-pre.target.wants`, replacing deprecated `systemd-udev-settle.service`.
+- **Fail-Safe Offline `initramfs-tools` Hooks (`offline_storage.go`):**
+  - Hardened Debian/Ubuntu `redwolf-storage` hook using direct `copy_file binary` in addition to `copy_exec` to eliminate `ldd` dynamic loader tracing failures on static and foreign ELF binaries.
+  - Added proactive kernel module loading (`dm_mod`, `dm-mod`, `raid0`, `raid1`, `raid10`, `linear`) and udev settling in early `local-top` stage.
+  - Configured `RESUME=none` in `/etc/initramfs-tools/conf.d/resume` to prevent boot delays waiting for obsolete swap partitions.
+
+### Fixed
+- **Complete Elimination of Network Dependencies in Chroot (`executor.go`):**
+  - Removed all fragile `apt-get` and `dnf` invocations inside target chroot during bare-metal deployment. Provisioning is now 100% autonomous and offline-resilient.
+  - Mounted `/dev/pts` alongside `/dev`, `/proc`, `/sys`, `/run` during chroot execution to prevent pseudo-terminal stalling.
+  - Added `--no-hostonly` to Dracut invocations to ensure all enterprise storage and RAID drivers are compiled into the boot image regardless of discovery container hardware differences.
+  - Added `obtain_device_list_from_udev = 0` to `lvmlocal.conf` to guarantee LVM block scanning even if udev is uninitialized during early boot.
+
 ## [1.3.10] - 2026-10-10 (Debian Merged-Usr Symlink Preservation & APT Fast-Fail Release)
 
 ### Fixed
