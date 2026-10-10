@@ -189,7 +189,6 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		"--level=1",
 		fmt.Sprintf("--raid-devices=%d", len(bootRaidMembers)),
 		"--metadata=1.0",
-		"--batch",
 		"--force",
 		"--run",
 	}
@@ -222,7 +221,6 @@ func setupSoftwareRAID(ctx context.Context, drives []string, cfg domain.Deployme
 		fmt.Sprintf("--level=%s", raidLevelStr),
 		fmt.Sprintf("--raid-devices=%d", len(dataRaidMembers)),
 		"--metadata=1.2",
-		"--batch",
 		"--force",
 		"--run",
 	}

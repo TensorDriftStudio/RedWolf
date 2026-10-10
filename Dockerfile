@@ -24,7 +24,7 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-ARG VERSION=v1.2.6
+ARG VERSION=v1.2.7
 ARG GIT_COMMIT=release
 ARG BUILD_DATE=""
 

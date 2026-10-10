@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.7] - 2026-10-10 (Software RAID mdadm Syntax Fix Release)
+
+### Fixed
+- **Software RAID `mdadm` Command Line Conformance:**
+  - Removed unsupported `--batch` option from `mdadm --create` invocations in `internal/agent/provision/storage_layout.go`.
+  - Resolved `exit status 2: mdadm: unrecognized option: batch` failure during RAID 1 `/boot` and data array creation.
+  - Retained standard `--force` and `--run` flags for non-interactive array creation.
+
+---
+
 ## [1.2.6] - 2026-10-10 (GPT Partitioning Resilience & Discovery Asset Auto-Sync Release)
 
 ### Fixed

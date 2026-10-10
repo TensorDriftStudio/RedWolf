@@ -12,7 +12,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, isLoading, error 
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [localError, setLocalError] = useState<string | null>(null);
-  const [version, setVersion] = useState<string>('1.2.6');
+  const [version, setVersion] = useState<string>('1.2.7');
 
   useEffect(() => {
     fetch('/api/version')
