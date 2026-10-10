@@ -423,7 +423,13 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.10 — Debian Merged-Usr Symlink Preservation & APT Fast-Fail (Current)
+### ✅ Version 1.3.11 — Autonomous Offline LVM & MDRAID Storage Engine (Current)
+- [x] **Autonomous Event-Driven UDEV Rules:** Automatically injects `/etc/udev/rules.d/64-md-raid-assembly.rules` and `/etc/udev/rules.d/69-dm-lvm.rules` for automated RAID assembly and LVM PV cache scans upon block device detection.
+- [x] **Zero Network Chroot Dependencies:** Completely eliminated all `apt-get` and `dnf` calls from deployment chroot, preventing network hangs and debconf stalls during bare-metal provisioning on air-gapped networks.
+- [x] **Hardened `initramfs-tools` Storage Hooks:** Injected direct binary copies bypassing `ldd` dynamic loader tracing failures, loaded proactive kernel modules (`dm_mod`, `raid0`, `raid1`, `raid10`), and configured `RESUME=none` to eliminate swap resume waits.
+- [x] **Universal Early Systemd Activation:** Bound early storage assembly service to both `sysinit.target.wants` and `local-fs-pre.target.wants`, replacing deprecated `systemd-udev-settle.service`.
+
+### ✅ Version 1.3.10 — Debian Merged-Usr Symlink Preservation & APT Fast-Fail
 - [x] **Debian / Ubuntu Merged-Usr Symlink Preservation:** Resolved target binary self-deletion during Debian/Ubuntu offline tool injection by safely handling systems where `/sbin` is a symlink to `usr/sbin`.
 - [x] **Fail-Fast `apt-get` Execution:** Guarded Debian chroot package manager fallback with 5s timeout and `DEBIAN_FRONTEND=noninteractive` to eliminate hangs in network-isolated environments.
 - [x] **Automatic Initial Ramdisk Creation Fallback:** Added `update-initramfs -c` fallback when initial update (`-u`) fails due to unregistered initial ramdisks.
