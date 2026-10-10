@@ -423,7 +423,12 @@ Lossless vector SVGs and transparent PNGs are available in [`assets/logo/`](file
 - [x] Multi-directory identity provider support (Local Admin, OpenLDAP, Active Directory).
 - [x] Hardware telemetry ingestion for CPUs, memory DIMMs, network interfaces, and storage drives.
 
-### ✅ Version 1.3.9 — Offline LVM & Software RAID Auto-Assembly (Current)
+### ✅ Version 1.3.10 — Debian Merged-Usr Symlink Preservation & APT Fast-Fail (Current)
+- [x] **Debian / Ubuntu Merged-Usr Symlink Preservation:** Resolved target binary self-deletion during Debian/Ubuntu offline tool injection by safely handling systems where `/sbin` is a symlink to `usr/sbin`.
+- [x] **Fail-Fast `apt-get` Execution:** Guarded Debian chroot package manager fallback with 5s timeout and `DEBIAN_FRONTEND=noninteractive` to eliminate hangs in network-isolated environments.
+- [x] **Automatic Initial Ramdisk Creation Fallback:** Added `update-initramfs -c` fallback when initial update (`-u`) fails due to unregistered initial ramdisks.
+
+### ✅ Version 1.3.9 — Offline LVM & Software RAID Auto-Assembly
 - [x] **Offline LVM & MDADM Tool Injection:** Guaranteed presence of `lvm` and `mdadm` binaries, runtime dependencies, and all LVM symlinks (`vgchange`, `lvscan`, `pvcreate`, etc.) in target filesystems without requiring internet connectivity.
 - [x] **Bulletproof Dracut Offline Storage Modules:** Injected `/etc/dracut.conf.d/99-redwolf-storage.conf` and standalone `/usr/lib/dracut/modules.d/90redwolf-storage/` fallback modules to prevent drop-to-shell errors during air-gapped deployments.
 - [x] **Debian / Ubuntu `initramfs-tools` Early Storage Assembly:** Added `/etc/initramfs-tools/hooks/redwolf-storage` and `scripts/local-top/redwolf-storage` executing `mdadm --assemble` and `lvm vgchange -ay` before root mount.

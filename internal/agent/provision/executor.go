@@ -953,10 +953,14 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			}
 			if !hasMdadm {
 				slog.InfoContext(ctx, "mdadm not found in chroot; attempting apt-get installation for Software RAID support")
-				aptCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "update", "-qq")
+				aptCtx, aptCancel := context.WithTimeout(ctx, 5*time.Second)
+				aptCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "update", "-qq")
+				aptCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 				_ = aptCmd.Run()
-				aptInstallCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "install", "-y", "-qq", "--no-install-recommends", "mdadm")
+				aptInstallCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "install", "-y", "-qq", "--no-install-recommends", "mdadm")
+				aptInstallCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 				_ = aptInstallCmd.Run()
+				aptCancel()
 			}
 		}
 
@@ -970,10 +974,14 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			}
 			if !hasLVM {
 				slog.InfoContext(ctx, "lvm not found in chroot; attempting apt-get installation for LVM support")
-				aptCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "update", "-qq")
+				aptCtx, aptCancel := context.WithTimeout(ctx, 5*time.Second)
+				aptCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "update", "-qq")
+				aptCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 				_ = aptCmd.Run()
-				aptInstallCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "apt-get", "install", "-y", "-qq", "--no-install-recommends", "lvm2")
+				aptInstallCmd := exec.CommandContext(aptCtx, "chroot", targetRootMount, "apt-get", "-o", "Acquire::http::Timeout=3", "-o", "Acquire::Connect-Timeout=3", "install", "-y", "-qq", "--no-install-recommends", "lvm2")
+				aptInstallCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 				_ = aptInstallCmd.Run()
+				aptCancel()
 			}
 		}
 
@@ -989,6 +997,7 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 			_ = os.WriteFile(modulesFile, []byte(content), 0644)
 		}
 		cmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", kInfo.KernelVersion)
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs inside chroot", "kernel_version", kInfo.KernelVersion)
@@ -996,10 +1005,21 @@ func tryRebuildInitramfs(ctx context.Context, targetRootMount string, isSoftware
 		}
 		slog.WarnContext(ctx, "update-initramfs with specific kernel returned warning; retrying -k all", "output", string(out), "error", err)
 		allCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-u", "-k", "all")
+		allCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 		allOut, allErr := allCmd.CombinedOutput()
 		if allErr == nil {
 			slog.InfoContext(ctx, "successfully updated debian/ubuntu initramfs for all kernels", "output", string(allOut))
 			return nil
+		}
+
+		// Also try -c (create) if -u (update) failed because no initramfs was registered yet
+		createCmd := exec.CommandContext(ctx, "chroot", targetRootMount, "update-initramfs", "-c", "-k", kInfo.KernelVersion)
+		createCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if cOut, cErr := createCmd.CombinedOutput(); cErr == nil {
+			slog.InfoContext(ctx, "successfully created debian/ubuntu initramfs inside chroot with -c", "kernel_version", kInfo.KernelVersion)
+			return nil
+		} else {
+			slog.WarnContext(ctx, "update-initramfs -c returned warning", "output", string(cOut), "error", cErr)
 		}
 
 		if hasExistingInitrd {

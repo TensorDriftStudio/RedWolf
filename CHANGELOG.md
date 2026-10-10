@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.10] - 2026-10-10 (Debian Merged-Usr Symlink Preservation & APT Fast-Fail Release)
+
+### Fixed
+- **Debian / Ubuntu Merged-Usr Symlink Preservation (`offline_storage.go`):**
+  - Resolved critical provisioning hang during Debian and Ubuntu deployment where `/sbin` is a symlink pointing to `usr/sbin`.
+  - Replaced unsafe `os.Remove(targetAlt)` with `mirrorBinary` helper: detects merged-usr directories where `/sbin` is already a symlink to `usr/sbin`, preventing accidental deletion of the newly injected `/usr/sbin/lvm` or `/usr/sbin/mdadm` binaries.
+  - Fixed `ensureLVMSymlinks` and `copyELFDependencies` to safely handle merged-usr environments without creating circular or broken symlinks.
+- **Fail-Fast `apt-get` and Noninteractive Chroot Execution (`executor.go`):**
+  - Added strict 5-second context timeout and `Acquire::http::Timeout=3 Acquire::Connect-Timeout=3` to Debian chroot `apt-get` calls, preventing infinite hangs on air-gapped or network-isolated bare-metal deployments.
+  - Enforced `DEBIAN_FRONTEND=noninteractive` across `apt-get` and `update-initramfs` subprocess executions.
+  - Added `update-initramfs -c` fallback when initial update (`-u`) fails due to unregistered initial ramdisks.
+
 ## [1.3.9] - 2026-10-10 (Offline LVM & Software RAID Auto-Assembly Release)
 
 ### Added

@@ -92,10 +92,10 @@ func InjectOfflineLVM(ctx context.Context, targetRootMount string) error {
 		return fmt.Errorf("failed copying lvm binary to %s: %w", targetLVM, err)
 	}
 
-	// Mirror to /sbin/lvm
-	_ = os.MkdirAll(filepath.Dir(targetLVMAlt), 0755)
-	_ = os.Remove(targetLVMAlt)
-	_ = os.Symlink("../usr/sbin/lvm", targetLVMAlt)
+	// Safely mirror to /sbin/lvm without corrupting merged-usr
+	if err := mirrorBinary(targetLVM, targetLVMAlt); err != nil {
+		slog.WarnContext(ctx, "warning mirroring lvm to /sbin/lvm", "error", err)
+	}
 
 	// Copy dynamic interpreter and ELF library dependencies if dynamically linked
 	if err := copyELFDependencies(foundSrc, targetRootMount); err != nil {
@@ -149,10 +149,10 @@ func InjectOfflineMDADM(ctx context.Context, targetRootMount string) error {
 		return fmt.Errorf("failed copying mdadm binary to %s: %w", targetMdadm, err)
 	}
 
-	// Mirror to /sbin/mdadm
-	_ = os.MkdirAll(filepath.Dir(targetMdadmAlt), 0755)
-	_ = os.Remove(targetMdadmAlt)
-	_ = os.Symlink("../usr/sbin/mdadm", targetMdadmAlt)
+	// Safely mirror to /sbin/mdadm without corrupting merged-usr
+	if err := mirrorBinary(targetMdadm, targetMdadmAlt); err != nil {
+		slog.WarnContext(ctx, "warning mirroring mdadm to /sbin/mdadm", "error", err)
+	}
 
 	// Copy dynamic interpreter and ELF library dependencies if dynamically linked
 	if err := copyELFDependencies(foundSrc, targetRootMount); err != nil {
@@ -160,6 +160,32 @@ func InjectOfflineMDADM(ctx context.Context, targetRootMount string) error {
 	}
 
 	return nil
+}
+
+// mirrorBinary guarantees that an executable in primary (e.g. /usr/sbin/foo)
+// is also available at alt (e.g. /sbin/foo), while safely handling merged-/usr
+// where alt's parent directory is already a symlink pointing to primary's parent directory.
+func mirrorBinary(targetPrimary, targetAlt string) error {
+	altDir := filepath.Dir(targetAlt)
+	// Check if altDir itself is a symlink (e.g. target/sbin -> usr/sbin in merged-usr)
+	if fi, err := os.Lstat(altDir); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+		// In merged-usr systems, writing to /usr/sbin makes it immediately accessible via /sbin!
+		// DO NOT remove or overwrite targetAlt, as doing so would delete targetPrimary.
+		return nil
+	}
+
+	// Check if targetAlt and targetPrimary are already the exact same file
+	fiPrimary, errPrimary := os.Stat(targetPrimary)
+	if errPrimary == nil {
+		if fiAlt, errAlt := os.Stat(targetAlt); errAlt == nil && os.SameFile(fiPrimary, fiAlt) {
+			return nil
+		}
+	}
+
+	// For traditional unmerged systems where altDir is an independent directory:
+	_ = os.MkdirAll(altDir, 0755)
+	_ = os.Remove(targetAlt)
+	return copyExecutableFile(targetPrimary, targetAlt)
 }
 
 // ensureLVMSymlinks guarantees that all standard LVM volume management commands
@@ -177,12 +203,18 @@ func ensureLVMSymlinks(targetRootMount string) {
 	}
 
 	for _, d := range dirs {
+		if fi, err := os.Lstat(d); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+			// Skip symlinked directory (merged-usr) since primary is already populated
+			continue
+		}
 		_ = os.MkdirAll(d, 0755)
 		for _, cmd := range commands {
 			targetSymlink := filepath.Join(d, cmd)
-			if _, err := os.Stat(targetSymlink); os.IsNotExist(err) {
-				_ = os.Symlink("lvm", targetSymlink)
+			if _, err := os.Lstat(targetSymlink); err == nil {
+				// Already exists (symlink or file)
+				continue
 			}
+			_ = os.Symlink("lvm", targetSymlink)
 		}
 	}
 }
@@ -233,10 +265,15 @@ func copyELFDependencies(srcBinary, targetRootMount string) error {
 
 						// Also ensure /lib64 alias if under /lib
 						if strings.HasPrefix(interpPath, "/lib/") {
-							lib64Path := filepath.Join(targetRootMount, "lib64", filepath.Base(interpPath))
-							_ = os.MkdirAll(filepath.Dir(lib64Path), 0755)
-							_ = os.Remove(lib64Path)
-							_ = os.Symlink(filepath.Join("..", "lib", filepath.Base(interpPath)), lib64Path)
+							lib64Dir := filepath.Join(targetRootMount, "lib64")
+							if fi, err := os.Lstat(lib64Dir); err == nil && (fi.Mode()&os.ModeSymlink != 0) {
+								// In merged systems where lib64 is a symlink, dstPath is already accessible
+							} else {
+								lib64Path := filepath.Join(lib64Dir, filepath.Base(interpPath))
+								_ = os.MkdirAll(lib64Dir, 0755)
+								_ = os.Remove(lib64Path)
+								_ = copyExecutableFile(dstPath, lib64Path)
+							}
 						}
 					}
 				}
@@ -396,6 +433,12 @@ done
 
 if [ -f /lib/ld-musl-x86_64.so.1 ]; then
     copy_exec /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
+fi
+
+if [ -x "${DESTDIR}/sbin/lvm" ]; then
+    for cmd in vgscan vgchange vgs vgdisplay lvscan lvchange lvs pvscan pvchange pvs; do
+        [ ! -e "${DESTDIR}/sbin/${cmd}" ] && ln -s lvm "${DESTDIR}/sbin/${cmd}"
+    done
 fi
 
 [ -f /etc/mdadm.conf ] && cp -p /etc/mdadm.conf "${DESTDIR}/etc/mdadm.conf"

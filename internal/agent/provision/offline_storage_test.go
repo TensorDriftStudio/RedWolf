@@ -183,3 +183,96 @@ func TestCopyExecutableFile(t *testing.T) {
 		t.Errorf("expected dst file to have executable bit set (0755), got: %v", fi.Mode())
 	}
 }
+
+func TestMirrorBinary_MergedUsr(t *testing.T) {
+	tempDir := t.TempDir()
+	usrSbin := filepath.Join(tempDir, "usr", "sbin")
+	if err := os.MkdirAll(usrSbin, 0755); err != nil {
+		t.Fatalf("failed creating usr/sbin: %v", err)
+	}
+
+	// Create symlink tempDir/sbin -> usr/sbin (Debian/Ubuntu merged-usr layout)
+	if err := os.Symlink(filepath.Join("usr", "sbin"), filepath.Join(tempDir, "sbin")); err != nil {
+		t.Fatalf("failed creating sbin symlink: %v", err)
+	}
+
+	primary := filepath.Join(usrSbin, "lvm")
+	if err := os.WriteFile(primary, []byte("lvm-binary-content"), 0755); err != nil {
+		t.Fatalf("failed writing primary lvm file: %v", err)
+	}
+
+	alt := filepath.Join(tempDir, "sbin", "lvm")
+
+	// mirrorBinary MUST NOT remove or corrupt primary via sbin symlink
+	if err := mirrorBinary(primary, alt); err != nil {
+		t.Fatalf("unexpected error mirroring binary: %v", err)
+	}
+
+	// Verify primary still exists and was not deleted
+	data, err := os.ReadFile(primary)
+	if err != nil {
+		t.Fatalf("primary file was deleted or corrupted by mirrorBinary: %v", err)
+	}
+	if string(data) != "lvm-binary-content" {
+		t.Errorf("expected content 'lvm-binary-content', got: %s", string(data))
+	}
+
+	// Verify alt is accessible and resolves to the same content
+	altData, err := os.ReadFile(alt)
+	if err != nil {
+		t.Fatalf("alt file not accessible: %v", err)
+	}
+	if string(altData) != "lvm-binary-content" {
+		t.Errorf("expected alt content 'lvm-binary-content', got: %s", string(altData))
+	}
+}
+
+func TestMirrorBinary_UnmergedUsr(t *testing.T) {
+	tempDir := t.TempDir()
+	usrSbin := filepath.Join(tempDir, "usr", "sbin")
+	sbin := filepath.Join(tempDir, "sbin")
+	_ = os.MkdirAll(usrSbin, 0755)
+	_ = os.MkdirAll(sbin, 0755)
+
+	primary := filepath.Join(usrSbin, "mdadm")
+	alt := filepath.Join(sbin, "mdadm")
+	if err := os.WriteFile(primary, []byte("mdadm-binary-content"), 0755); err != nil {
+		t.Fatalf("failed creating primary file: %v", err)
+	}
+
+	if err := mirrorBinary(primary, alt); err != nil {
+		t.Fatalf("unexpected error mirroring unmerged binary: %v", err)
+	}
+
+	altData, err := os.ReadFile(alt)
+	if err != nil {
+		t.Fatalf("expected alt file to exist in unmerged system: %v", err)
+	}
+	if string(altData) != "mdadm-binary-content" {
+		t.Errorf("content mismatch in unmerged alt: %s", string(altData))
+	}
+}
+
+func TestEnsureLVMSymlinks_MergedUsr(t *testing.T) {
+	tempDir := t.TempDir()
+	usrSbin := filepath.Join(tempDir, "usr", "sbin")
+	_ = os.MkdirAll(usrSbin, 0755)
+	_ = os.Symlink(filepath.Join("usr", "sbin"), filepath.Join(tempDir, "sbin"))
+
+	lvmPath := filepath.Join(usrSbin, "lvm")
+	_ = os.WriteFile(lvmPath, []byte("#!/bin/sh\necho LVM"), 0755)
+
+	ensureLVMSymlinks(tempDir)
+
+	for _, cmd := range []string{"vgchange", "vgscan", "lvscan", "pvscan"} {
+		linkPath := filepath.Join(usrSbin, cmd)
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Errorf("expected symlink for %s at %s, error: %v", cmd, linkPath, err)
+			continue
+		}
+		if target != "lvm" {
+			t.Errorf("expected target lvm, got %s", target)
+		}
+	}
+}
